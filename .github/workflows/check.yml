@@ -24,6 +24,9 @@ jobs:
       - name: Install package manager
         run: |
           New-Item -ItemType Directory -Path check-logs | Out-Null
+          @('package-manager.log', 'dependencies.log', 'frontend-build.log', 'frontend-tests.log', 'rust-toolchain.log', 'rust-format.log', 'rust-tests.log', 'rust-clippy.log', 'windows-release-build.log') | ForEach-Object {
+            [IO.File]::WriteAllText((Join-Path check-logs $_), '', [Text.UTF8Encoding]::new($false))
+          }
           npm install --global pnpm@11.25.0 2>&1 | Tee-Object -FilePath check-logs/package-manager.log -Encoding utf8NoBOM
           if ($LASTEXITCODE -ne 0) { throw 'Package manager installation failed' }
       - name: Install locked dependencies
