@@ -13,7 +13,8 @@ fn watched_paths(config:&Value)->Vec<PathBuf>{
     let mut paths:Vec<PathBuf>=config["roots"].as_array().into_iter().flatten().filter(|root|root["enabled"]!=false).filter_map(|root|root["resolvedPath"].as_str().map(PathBuf::from)).chain(config["skills"].as_array().into_iter().flatten().filter_map(|skill|skill["localPath"].as_str().map(PathBuf::from))).collect();
     paths.sort_by_key(|path|path.components().count());
     let mut roots=Vec::new();
-    for path in paths {if !roots.iter().any(|root:&PathBuf|path.starts_with(root)){roots.push(path);}}
+    let separator=if cfg!(windows){"\\"}else{"/"};
+    for path in paths {let key=path_key(&path);if !roots.iter().any(|root:&PathBuf|{let root=path_key(root);key==root||key.starts_with(&(root+separator))}){roots.push(path);}}
     roots
 }
 
@@ -83,8 +84,9 @@ pub(crate) fn start(service:&Arc<TaskSystem>){
                 }
                 #[cfg(not(windows))] {let _=&sender;fallback=true;}
                 previous_paths=paths;previous_generation=Some(generation);stamps.clear();
+                if fallback {for skill in config["skills"].as_array().into_iter().flatten(){if let Some(path)=skill["localPath"].as_str(){stamps.insert(path.to_owned(),metadata_stamp(Path::new(path)));}}}
                 if changed{
-                    let _=service.automatic_check(json!({"action":"check_now","automatic":true,"checkGeneration":generation}));
+                    let _=service.automatic_local_check(json!({"automatic":true,"checkGeneration":generation,"full":true}));
                     remote_checked=Instant::now();fallback_checked=Instant::now();
                 }
             }
@@ -97,14 +99,14 @@ pub(crate) fn start(service:&Arc<TaskSystem>){
             let due=last_event.is_some_and(|time|time.elapsed()>=DEBOUNCE)||first_event.is_some_and(|time|time.elapsed()>=MAX_DEBOUNCE);
             if due&&!pending.is_empty(){
                 let ids=dirty_ids(&config,&pending);
-                let _=service.automatic_check(json!({"action":"check_now","automatic":true,"checkGeneration":generation,"skillIds":ids,"changedPaths":pending,"discoveryOnly":true}));
+                let _=service.automatic_local_check(json!({"automatic":true,"checkGeneration":generation,"skillIds":ids,"changedPaths":pending}));
                 pending.clear();first_event=None;last_event=None;
             }
             if fallback&&fallback_checked.elapsed()>=FALLBACK_INTERVAL{
                 let mut dirty=BTreeSet::new();
                 for skill in config["skills"].as_array().into_iter().flatten(){if let Some(path)=skill["localPath"].as_str(){let current=metadata_stamp(Path::new(path));if stamps.get(path).is_some_and(|previous|previous!=&current){dirty.insert(PathBuf::from(path));}stamps.insert(path.to_owned(),current);}}
                 let ids=dirty_ids(&config,&dirty);
-                let _=service.automatic_check(json!({"action":"check_now","automatic":true,"checkGeneration":generation,"skillIds":ids,"discoveryOnly":true}));fallback_checked=Instant::now();
+                let _=service.automatic_local_check(json!({"automatic":true,"checkGeneration":generation,"skillIds":ids}));fallback_checked=Instant::now();
             }
             if remote_checked.elapsed()>=REMOTE_INTERVAL{
                 let _=service.automatic_check(json!({"action":"check_now","automatic":true,"checkGeneration":generation,"remoteOnly":true}));remote_checked=Instant::now();

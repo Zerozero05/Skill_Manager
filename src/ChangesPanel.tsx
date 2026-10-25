@@ -4,6 +4,7 @@ import { changePrimaryAction, changeReason, changesGroup, changesSummary, displa
 import './updates-v025.css';
 
 export type ChangesSourceError = { id: string; repo: string; error?: string | null; lastChecked?: string | null; branch?: string };
+export type CheckSummary = { checkedAt?: string; newLocal?: number; newRemote?: number; associated?: number; needsAttention?: number; errors?: number; rootErrors?: string[] };
 export type ChangesPanelProps<T extends LibraryItem> = {
   skills: readonly T[];
   sourceErrors?: readonly ChangesSourceError[];
@@ -15,18 +16,22 @@ export type ChangesPanelProps<T extends LibraryItem> = {
   onFiles: (skill: T) => void;
   onCheck: (skill: T) => void | Promise<unknown>;
   onCheckSource?: (source: ChangesSourceError) => void | Promise<unknown>;
+  checkSummary?: CheckSummary;
+  onCheckMany?: (skillIds: string[]) => void | Promise<unknown>;
 };
 const groups: ChangesGroup[] = ['changed', 'review', 'problem'];
 const icons = { changed: ArrowLeftRight, review: CircleHelp, problem: CircleAlert };
 const checked = (value?: string | null) => { const date = value ? new Date(value) : null; return date && Number.isFinite(date.valueOf()) ? date.toLocaleString('zh-CN', {hour12:false}) : '尚无检查记录'; };
 
-export function ChangesPanel<T extends LibraryItem>({ skills, sourceErrors = [], busy = false, onOpen, onCompare, onUpload, onDocs, onFiles, onCheck, onCheckSource }: ChangesPanelProps<T>) {
+export function ChangesPanel<T extends LibraryItem>({ skills, sourceErrors = [], busy = false, onOpen, onCompare, onUpload, onDocs, onFiles, onCheck, onCheckSource, checkSummary, onCheckMany }: ChangesPanelProps<T>) {
   const [query, setQuery] = useState(''), [group, setGroup] = useState<ChangesFilter>('all'), [page, setPage] = useState(1), [pageSize, setPageSize] = useState(20);
+  const [selection, setSelection] = useState<string[]>([]);
   const matching = useMemo(() => queryChanges(skills, {query}), [skills, query]);
   const counts = useMemo(() => changesSummary(matching), [matching]);
   const filtered = useMemo(() => group === 'all' ? matching : matching.filter(skill => changesGroup(skill) === group), [matching, group]);
   const result = paginateLibrary(filtered, page, pageSize);
   const sources = sourceErrors.filter(source => !!source.error);
+  const selected = selection.filter(id => skills.some(skill => skill.id === id));
   useEffect(() => { if (page !== result.page) setPage(result.page); }, [page, result.page]);
   function selectGroup(value: ChangesFilter) { setGroup(value); setPage(1); }
   function runPrimary(skill: T) {
@@ -35,9 +40,10 @@ export function ChangesPanel<T extends LibraryItem>({ skills, sourceErrors = [],
     else if (action.kind === 'docs') onDocs(skill);
     else if (action.kind === 'files') onFiles(skill);
     else if (action.kind === 'check') void onCheck(skill);
-    else onOpen(skill, displayStatus(skill).key === 'unknown_baseline' ? 'source' : undefined);
+    else onOpen(skill, skill.associationPending || displayStatus(skill).key === 'unknown_baseline' ? 'source' : undefined);
   }
   return <section className="changes-panel" aria-label="变化与待核对">
+    {checkSummary && <details className="check-recap" data-fold-key="recent-check"><summary><strong>最近检查</strong><span>{checked(checkSummary.checkedAt)}</span></summary><dl><div><dt>新登记</dt><dd>{(checkSummary.newLocal || 0) + (checkSummary.newRemote || 0)}</dd></div><div><dt>新关联</dt><dd>{checkSummary.associated || 0}</dd></div><div><dt>需处理</dt><dd>{checkSummary.needsAttention || 0}</dd></div><div><dt>异常</dt><dd>{checkSummary.errors || 0}</dd></div></dl>{checkSummary.rootErrors?.map((error, index) => <p className="error-text" key={index}>{error}</p>)}</details>}
     <div className="changes-overview" aria-label="需要关注的 Skill 分类">{groups.map(value => { const Icon = icons[value]; return <button key={value} className={`changes-overview-item is-${value}`} type="button" aria-pressed={group === value} onClick={() => selectGroup(group === value ? 'all' : value)}><Icon size={18} aria-hidden="true" /><strong>{counts[value]}</strong><span>{statusFilterLabel(value)}</span></button>; })}</div>
     <div className="changes-results">
       <div className="changes-toolbar">
@@ -46,12 +52,13 @@ export function ChangesPanel<T extends LibraryItem>({ skills, sourceErrors = [],
         {(query || group !== 'all') && <button className="text-button" type="button" onClick={() => { setQuery(''); selectGroup('all'); }}>清除筛选</button>}
       </div>
       <div className="changes-list-heading"><strong>{group === 'all' ? '需要关注的 Skill' : statusFilterLabel(group)}</strong><span role="status">{result.total} 个 Skill{query && ' · 当前搜索结果'}</span></div>
-      <div className="changes-rows">{result.items.map(skill => {
+      {onCheckMany && !!filtered.length && <div className="changes-selection"><button type="button" className="text-button" disabled={busy} onClick={() => setSelection(filtered.map(skill => skill.id))}>选择当前结果 ({filtered.length})</button><button type="button" className="text-button" disabled={busy || !selected.length} onClick={() => setSelection([])}>取消选择</button><span>{selected.length} 项已选</span><button type="button" className="button" disabled={busy || !selected.length} onClick={() => void onCheckMany(selected)}><RefreshCw size={14} />检查／重试所选</button></div>}
+      <div className="changes-rows" tabIndex={onCheckMany ? 0 : undefined} aria-label="待处理 Skill 列表" onKeyDown={event => { if ((event.target as HTMLElement).matches('input,textarea,select,[contenteditable="true"]')) return; if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && onCheckMany) { event.preventDefault(); event.stopPropagation(); setSelection(filtered.map(skill => skill.id)); } if (event.key === 'Escape') setSelection([]); }}>{result.items.map(skill => {
         const status = displayStatus(skill), action = changePrimaryAction(skill), reason = changeReason(skill);
         const blocked = busy || action.kind === 'compare' && !!skill.readOnly;
         const changedPaths = [...new Set((skill.changeDetails || []).filter(file => file.change !== 'unchanged').map(file => file.path))];
         return <article className="changes-item" key={skill.id} data-change-skill={skill.id} data-change-group={changesGroup(skill)}>
-          <div className="changes-item-heading"><button className="changes-skill-name" type="button" onClick={() => onOpen(skill)}>{skill.displayName || skill.name}</button><span className={`badge ${status.tone}`} title={statusExplanation(skill)} data-status={status.key} data-status-group={status.group}><span className="status-dot" />{status.label}</span></div>
+          <div className="changes-item-heading">{onCheckMany && <input type="checkbox" aria-label={`选择变化 ${skill.displayName || skill.name}`} disabled={busy} checked={selected.includes(skill.id)} onChange={event => setSelection(previous => event.target.checked ? [...previous, skill.id] : previous.filter(id => id !== skill.id))} />}<button className="changes-skill-name" type="button" onClick={() => onOpen(skill)}>{skill.displayName || skill.name}</button><span className={`badge ${status.tone}`} title={statusExplanation(skill)} data-status={status.key} data-status-group={status.group}><span className="status-dot" />{status.label}</span></div>
           {(status.detail !== status.label || reason !== status.detail) && <p className="changes-reason">{status.detail !== status.label && <strong>{status.detail}</strong>}{reason !== status.detail && <span>{reason}</span>}</p>}
           <div className="changes-item-meta"><span title={skill.repo ? `${skill.repo}/${skill.remotePath || ''}` : skill.localPath || undefined}>{skill.repo || (skill.localPath ? '本地目录' : '来源待核对')}</span>{changedPaths.length > 0 && <span title={changedPaths.join('\n')}>{changedPaths.length} 个差异文件</span>}<span>{skill.comparisonScope?.length ? `比较范围 ${skill.comparisonScope.length} 个文件` : '比较范围待核对'}</span></div>
           <div className="changes-item-footer">{skill.lastChecked && <span>最近记录：{checked(skill.lastChecked)}</span>}<div className="changes-actions"><button className="button secondary" type="button" disabled={busy} onClick={() => onOpen(skill)}>查看详情</button><button className="button primary" type="button" disabled={blocked} title={skill.readOnly && action.kind === 'compare' ? '应用托管 Skill 保持只读，可查看详情与来源' : undefined} onClick={() => runPrimary(skill)}>{action.kind === 'check' && <RefreshCw size={14} />}{action.label}</button>{status.key === 'local_modified' && skill.sourceId && skill.localPath && <button className="button secondary" type="button" disabled={busy || skill.readOnly} title={skill.readOnly ? '应用托管 Skill 不能提交修改' : '先选择并预览，再确认提交'} onClick={() => void onUpload(skill)}>预览提交</button>}</div></div>

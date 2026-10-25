@@ -486,6 +486,7 @@ fn v029_selected_check_discovers_external_upload_and_preserves_other_records() {
     assert_eq!(local["remotePath"], "skills/protocol-skill");
     assert_eq!(local["categoryId"], "category");
     assert_eq!(local["favorite"], true);
+    assert_eq!(local["associationPending"], false);
     assert!(local["installedCommit"].is_null());
     assert_eq!(result["checkSummary"]["associated"], 1);
     assert_eq!(fixture.manager.state.skills.len(), 2);
@@ -514,6 +515,8 @@ fn v029_selected_discovery_keeps_ambiguous_remote_candidates_unassociated() {
     assert!(fixture.manager.skill("local-id").unwrap()["sourceId"].is_null());
     assert_eq!(fixture.manager.state.skills.len(), 1);
     assert_eq!(result["checkSummary"]["associated"], 0);
+    assert_eq!(result["checkSummary"]["associationPending"], 1);
+    assert_eq!(fixture.manager.skill("local-id").unwrap()["associationPending"], true);
     assert!(fixture.manager.skill("local-id").unwrap()["associationNote"].as_str().unwrap().contains("不唯一"));
     server.assert_clean();
 }
@@ -529,9 +532,13 @@ fn v029_unchanged_automatic_tick_only_probes_commit_without_state_or_file_reads(
     let before = serde_json::to_value(&fixture.manager.state).unwrap();
     let before_revision = fixture.manager.snapshot()["stateRevision"].clone();
     let request_count = server.state.lock().unwrap().requests.len();
+    // Local changes belong to the native watcher/dirty-Skill task, rather than
+    // forcing another directory inventory during every remote commit probe.
+    fs::remove_file(fixture.root.join("SKILL.md")).unwrap();
     check(&mut fixture.manager, &json!({"automatic":true,"remoteOnly":true})).unwrap();
     assert_eq!(serde_json::to_value(&fixture.manager.state).unwrap(), before);
     assert_eq!(fixture.manager.snapshot()["stateRevision"], before_revision);
+    fs::write(fixture.root.join("SKILL.md"), &fixture.original_runtime).unwrap();
     {
         let state = server.state.lock().unwrap();
         let requests = &state.requests[request_count..];

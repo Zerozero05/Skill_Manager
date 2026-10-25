@@ -23,10 +23,24 @@ fn preserves_manual_scope(skill: &Value) -> bool {
 }
 
 fn binding_stamp(skill: &Value) -> String {
+    // Explicit external bindings may change without any Skill file changing.
+    // Metadata is a cheap cache invalidator; actual audits/exports still read
+    // and hash the selected resource before treating it as available.
+    let local_files: Vec<_> = skill["externalBindings"].as_array().into_iter().flatten()
+        .filter(|binding|binding["sourceKind"]!="github")
+        .filter_map(|binding|binding["path"].as_str())
+        .map(|path| {
+            let canonical=std::fs::canonicalize(path).ok();
+            let metadata=std::fs::metadata(path).ok();
+            let modified=metadata.as_ref().and_then(|metadata|metadata.modified().ok())
+                .and_then(|time|time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|time|time.as_nanos().to_string());
+            json!({"path":path,"canonical":canonical.map(|path|path.to_string_lossy().into_owned()),"length":metadata.as_ref().map(|metadata|metadata.len()),"modified":modified})
+        }).collect();
     format!(
         "{:x}",
         Sha256::digest(
-            serde_json::to_vec(&skill["externalBindings"]).expect("serializable bindings")
+            serde_json::to_vec(&json!({"bindings":skill["externalBindings"],"localFiles":local_files})).expect("serializable bindings")
         )
     )
 }
@@ -288,6 +302,26 @@ mod tests {
         refresh_local_audit(&mut manager.state.skills[0],None);
         assert_eq!(manager.state.skills[0]["runtimeAudit"]["status"],"needs_review");
         assert_eq!(manager.state.skills[0]["runtimeAudit"]["externalDependencies"][0]["status"],"needs_selection");
+    }
+
+    #[test]
+    fn external_binding_file_removal_invalidates_unchanged_package_audit_cache() {
+        let fixture=fixture();
+        let root=fixture.path().join("skill");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("SKILL.md"),"---\nname: fixture\n---\nRead `assets/missing.txt`.\n").unwrap();
+        let replacement=fixture.path().join("replacement.txt");
+        fs::write(&replacement,"actual external file").unwrap();
+        let mut manager=Manager::new(fixture.path().join("state")).unwrap();
+        let mut skill=local::draft(&root).unwrap();skill["id"]=json!("fixture");manager.state.skills.push(skill);
+        let report=crate::external::handle(&mut manager,&json!({"action":"get_external_dependencies","skillId":"fixture","includeRemote":false})).unwrap().unwrap();
+        crate::external::handle(&mut manager,&json!({"action":"bind_external_dependency","skillId":"fixture","dependencyId":report["items"][0]["id"],"role":"required","path":replacement.to_string_lossy(),"includeRemote":false})).unwrap();
+        let inventory=local::files(&root).unwrap();
+        assert_eq!(manager.state.skills[0]["runtimeAudit"]["status"],"passed");
+        assert!(!refresh_local_audit(&mut manager.state.skills[0],Some(&inventory)));
+        fs::remove_file(replacement).unwrap();
+        assert!(refresh_local_audit(&mut manager.state.skills[0],Some(&inventory)));
+        assert_eq!(manager.state.skills[0]["runtimeAudit"]["status"],"needs_review");
     }
     #[test]
     fn automatic_audit_keeps_optional_scope_and_never_invents_installation_or_invocation() {

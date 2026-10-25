@@ -12,11 +12,11 @@ export type WorkspaceShellProps = {
   pendingTransfers?: ReadonlySet<string>; taskBadges?: ReadonlyMap<string, PaneTaskBadge>;
   splitView?: SplitView; onSplitChange?: (splitView?: SplitView) => void;
   renderPane: (pane: WorkspacePane, active: boolean, visible: boolean) => ReactNode;
-  onResetLayout?: () => void; onShowHelp?: () => void; shortcutsBlocked?: boolean;
+  onResetLayout?: () => void; onShowHelp?: () => void; shortcutsBlocked?: boolean; checkControl?: ReactNode;
 };
 
 /** A native window has one shell. Pages remain mounted when their tab is inactive. */
-export function WorkspaceShell({ panes, activePaneId, onActivate, onClose, onReorder, onDetach, onReturn, pendingTransfers, taskBadges, splitView, onSplitChange, renderPane, onResetLayout, onShowHelp, shortcutsBlocked = false }: WorkspaceShellProps) {
+export function WorkspaceShell({ panes, activePaneId, onActivate, onClose, onReorder, onDetach, onReturn, pendingTransfers, taskBadges, splitView, onSplitChange, renderPane, onResetLayout, onShowHelp, shortcutsBlocked = false, checkControl }: WorkspaceShellProps) {
   const strip = useRef<HTMLDivElement>(null);
   const pages = useRef<HTMLDivElement>(null);
   const gesture = useRef<{ paneId: string; pointerId: number; startX: number; startY: number; moved: boolean; beforeId?: string; detach: boolean } | null>(null);
@@ -132,6 +132,7 @@ export function WorkspaceShell({ panes, activePaneId, onActivate, onClose, onReo
         </div>; })}
       </div>
       <div className="workspace-actions">
+        {checkControl}
         {onSplitChange && <button className="icon-button" title={split ? '恢复单页，保留当前焦点与页面内容' : '工作台在左，当前业务页在右'} aria-label={split ? '恢复单页' : '左右分栏'} aria-pressed={!!split} disabled={!split && (!home || !splitCandidate)} onClick={() => onSplitChange(split ? undefined : { rightPaneId: splitCandidate!.id, ratio: DEFAULT_SPLIT_RATIO })}><Columns2 size={16} /></button>}
         {active?.kind !== 'home' && active && <>
           {onReturn && <button className="icon-button" title="移回主窗口" aria-label="将当前标签移回主窗口" disabled={pendingTransfers?.has(active.id)} onClick={() => onReturn(active.id)}><CornerUpLeft size={16} /></button>}

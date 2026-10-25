@@ -25,7 +25,7 @@ export interface LibraryItem {
   favorite?: boolean; comparisonScope?: readonly string[]; runtimeConfirmed?: boolean;
   baselineCommit?: string | null; baselineKind?: string; installedCommit?: string | null; commit?: string | null; lastLocalCheckedAt?: string | null; lastRemoteCheckedAt?: string | null;
   changeDetails?: readonly {path: string; change: string; side?: string}[];
-  comparisonNote?: string | null; associationNote?: string | null;
+  comparisonNote?: string | null; associationNote?: string | null; associationPending?: boolean;
 }
 const attention = new Set(['error', 'remote_missing', 'remote_check_required', 'remote_updated', 'local_modified', 'both_modified', 'docs_updated', 'unknown_baseline', 'local_extra']);
 const priority: Record<string, number> = { error: 0, remote_missing: 0, both_modified: 1, remote_updated: 2, local_modified: 3, docs_updated: 4, remote_check_required: 5, unknown_baseline: 5, local_extra: 6, remote_only: 7, synced: 8, local_only: 9 };
@@ -104,7 +104,7 @@ export function githubFolderUrl(source: { repo?: string | null; branch?: string 
 }
 export function needsAttention(skill: LibraryItem): boolean {
   const runtimeAttention = skill.runtimeIssues === undefined ? skill.runtimeWarnings?.length : runtimeAttentionCount(skill.runtimeIssues);
-  return Boolean(skill.localNotice || skill.untrackedFiles?.length || runtimeAttention || attention.has(displayStatus(skill).key));
+  return Boolean(skill.associationPending || skill.localNotice || skill.untrackedFiles?.length || runtimeAttention || attention.has(displayStatus(skill).key));
 }
 export function queryLibrary<T extends LibraryItem>(items: readonly T[], options: LibraryQuery = {}): T[] {
   const terms = normalize(options.query || '').trim().split(/\s+/).filter(Boolean);
@@ -159,6 +159,7 @@ export function changeReason(skill: LibraryItem): string {
   if (status.key === 'error') return skill.error || '本次检查未完成，之前的比较结果不能作为当前结论。';
   if (status.key === 'remote_missing') return '远端对应目录已缺失；本地文件继续保留，请核对来源。';
   if (status.key === 'remote_check_required') return '尚未核对当前远端，不能把上次比较结果当作当前状态。';
+  if (skill.associationPending) return skill.associationNote || '发现多个可能的来源，请在来源页选择对应项。';
   if (status.key === 'unknown_baseline') return skill.comparisonNote || (skill.baselineCommit ? '已有比较基准，但当前范围或差异仍需核对；不判断哪侧较新。' : '比较基准尚未核实，不能判断哪侧较新。');
   if (status.key === 'local_extra') return skill.localNotice || `${skill.untrackedFiles?.length ? `范围外有 ${skill.untrackedFiles.length} 个本地文件` : '有范围外本地文件'}，尚不等于待上传修改。`;
   if (status.key === 'docs_updated') return '运行比较内容一致，仅远端说明或管理信息更新，无需重装运行文件。';
@@ -172,6 +173,7 @@ export type ChangeActionKind = 'open' | 'compare' | 'docs' | 'files' | 'check';
 export function changePrimaryAction(skill: LibraryItem): {kind:ChangeActionKind;label:string} {
   const status = displayStatus(skill);
   if (status.group === 'problem' || status.key === 'remote_check_required') return {kind:'check',label:'重新检查'};
+  if (skill.associationPending) return {kind:'open',label:'选择来源'};
   if (status.key === 'docs_updated') return {kind:'docs',label:'查看说明'};
   if (status.key === 'local_extra') return {kind:'files',label:'查看文件'};
   if (status.key === 'unknown_baseline') return {kind:'open',label:'核对依据'};

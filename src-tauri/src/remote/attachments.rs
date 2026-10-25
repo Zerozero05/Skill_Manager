@@ -397,8 +397,14 @@ pub(crate) fn prepare_export(m: &Manager, req: &Value) -> Result<PreparedExport,
             remote_path(&skill)?,
             Some(&roots),
         )?;
-        let resolved = crate::external::inspect_snapshot(&skill,Some(&root),&expected,&selected.issues,snap);
-        crate::external::apply_resolutions(&mut selected,&resolved);
+        let resolved = crate::external::inspect_snapshot(
+            &skill,
+            Some(&root),
+            &expected,
+            &selected.issues,
+            snap,
+        );
+        crate::external::apply_resolutions(&mut selected, &resolved);
         if let Some(issue) = selected
             .issues
             .iter()
@@ -411,7 +417,7 @@ pub(crate) fn prepare_export(m: &Manager, req: &Value) -> Result<PreparedExport,
         }
         selected.required_files
     } else {
-        local::minimal_runtime_for_skill(&skill,&root,&expected)?
+        local::minimal_runtime_for_skill(&skill, &root, &expected)?
     };
     let (mut data, mut sources) = collect_export(
         &root,

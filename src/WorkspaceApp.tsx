@@ -5,6 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import SessionApp from './App';
 import { useTasks, terminalTask } from './tasks';
 import { WorkspaceShell } from './WorkspaceShell';
+import { CheckControl } from './CheckControl';
 import { createHomePane, localHistoryPane, reorderWorkspacePanes, type WorkspaceNavigation, type WorkspacePane, type ScreenPoint, type PaneTaskBadge } from './workspace';
 import { WorkspaceSessionContext, type PaneFocusNavigation, type SessionBridge, type SessionDraft } from './session';
 import './session.css';
@@ -83,9 +84,9 @@ export default function WorkspaceApp() {
     managerRevision.current = revision; setManagerSnapshot(next);
   }, []);
   useEffect(() => {
-    const snapshot = managerSnapshot as { connections?: { id: string; path: string; target: string; autoRepairable?: boolean; checkedAt?: string }[] } | undefined;
+    const snapshot = managerSnapshot as { checkMode?: string; connections?: { id: string; path: string; target: string; autoRepairable?: boolean; checkedAt?: string }[] } | undefined;
     const candidates = snapshot?.connections?.filter(connection => connection.autoRepairable) || [];
-    if (!candidates.length || closingRef.current) return;
+    if (!candidates.length || closingRef.current || snapshot?.checkMode === 'manual') return;
     const key = JSON.stringify(candidates.map(connection => [connection.id, connection.path, connection.target]));
     const previous = attemptedClientRepairs.current.get(key);
     if (previous !== undefined && Date.now() - previous < 30 * 60_000) return;
@@ -387,7 +388,7 @@ export default function WorkspaceApp() {
   return <div className={`desktop-workspace ${closing ? 'workspace-is-closing' : ''}`}>
     {error && <div className="workspace-error" role="alert"><span>{error}</span><button onClick={() => setError('')}>关闭提示</button></div>}
     {closing && <div className="workspace-closing" role="status">正在保存并等待关键任务完成…</div>}
-    <WorkspaceShell panes={panes} activePaneId={incomingPanes.at(-1)?.id || owner?.activePaneId || panes[0].id} splitView={owner?.splitView} onSplitChange={splitView => { void applyReply(api('workspace_set_split', { splitView: splitView || null })); }} pendingTransfers={pendingTransfers} taskBadges={badges} shortcutsBlocked={closing}
+    <WorkspaceShell panes={panes} activePaneId={incomingPanes.at(-1)?.id || owner?.activePaneId || panes[0].id} splitView={owner?.splitView} onSplitChange={splitView => { void applyReply(api('workspace_set_split', { splitView: splitView || null })); }} pendingTransfers={pendingTransfers} taskBadges={badges} shortcutsBlocked={closing} checkControl={<CheckControl snapshot={managerSnapshot} tasks={tasks} onSnapshot={acceptSnapshot} disabled={closing} />}
       onActivate={id => { void applyReply(api('workspace_activate', { paneId: id })); }} onClose={closePane}
       onReorder={(id, beforeId) => { const window = current.current.windows.find(item => item.label === label); if (window) void applyReply(api('workspace_save', { panes: reorderWorkspacePanes(window.panes, id, beforeId), activePaneId: window.activePaneId, expectedRevision: current.current.revision })); }}
       onDetach={(id, point) => { void movePane(id, point); }} onReturn={label === 'main' ? undefined : id => { void movePane(id, undefined, true); }}

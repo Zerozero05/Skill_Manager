@@ -67,7 +67,7 @@ impl Manager {
         db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS app_state (id INTEGER PRIMARY KEY CHECK(id=1), schema_version INTEGER NOT NULL, payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS workspace_state (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL);").map_err(|e| e.to_string())?;
         let saved: Result<String, _> =
             db.query_row("SELECT payload FROM app_state WHERE id=1", [], |r| r.get(0));
-        let (mut state, revision) = match saved {
+        let (state, revision) = match saved {
             Ok(s) => {
                 let value: Value = serde_json::from_str(&s).map_err(|e| {
                     format!("Cannot read saved state; original database preserved: {e}")
@@ -94,9 +94,6 @@ impl Manager {
             ),
             Err(e) => return Err(e.to_string()),
         };
-        // The previously selected personal directory is the only approved
-        // migration seed. Never infer arbitrary parents from registered Skills.
-        crate::local_roots::migrate_selected_root(&mut state);
         Ok(Self {
             data_dir,
             storage,

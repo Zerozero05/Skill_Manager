@@ -9,7 +9,7 @@
     "check": "tsc --noEmit",
     "tauri": "tauri",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml --locked",
-    "test:ui": "node --experimental-strip-types --test tests/categories.test.ts tests/changes.test.ts tests/clients.test.ts tests/destination.test.ts tests/export-selection.test.ts tests/external.test.ts tests/folds.test.ts tests/history.test.ts tests/information.test.ts tests/library.test.ts tests/network-diagnostics.test.ts tests/read-cache.test.ts tests/runtime-presentation.test.ts tests/runtime.test.ts tests/shortcut-help.test.ts tests/snapshot-clock.test.ts tests/themes.test.ts tests/workspace.test.ts tests/bridge-recovery.test.ts tests/export-recovery-hook.test.ts tests/local-sources.test.ts tests/check-ui.test.ts"
+    "test:ui": "node --experimental-strip-types --test tests/categories.test.ts tests/changes.test.ts tests/clients.test.ts tests/destination.test.ts tests/export-selection.test.ts tests/external.test.ts tests/folds.test.ts tests/history.test.ts tests/information.test.ts tests/library.test.ts tests/network-diagnostics.test.ts tests/read-cache.test.ts tests/runtime-presentation.test.ts tests/runtime.test.ts tests/shortcut-help.test.ts tests/snapshot-clock.test.ts tests/themes.test.ts tests/workspace.test.ts tests/bridge-recovery.test.ts tests/export-recovery-hook.test.ts tests/local-sources.test.ts tests/check-ui.test.ts tests/local-import-ui.test.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

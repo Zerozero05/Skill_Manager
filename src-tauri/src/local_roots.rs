@@ -9,23 +9,6 @@ pub(crate) fn path_key(path: &Path) -> String {
     if cfg!(windows) { text.to_lowercase() } else { path.to_string_lossy().into_owned() }
 }
 
-pub(crate) fn migrate_selected_root(state: &mut State) {
-    #[cfg(windows)]
-    if state.local_roots.is_empty() && state.check_generation == 0 {
-        let approved = Path::new(r"D:\03_ChatGPT_V1\skills");
-        let key = path_key(approved);
-        if state.skills.iter().any(|skill| skill["localPath"].as_str().is_some_and(|path| {
-            let path = path_key(Path::new(path));
-            path == key || path.starts_with(&(key.clone() + "\\"))
-        })) {
-            state.local_roots.push(json!({"id":uuid::Uuid::new_v4().to_string(),"name":"个人 Skills","path":approved.to_string_lossy(),"resolvedPath":approved.to_string_lossy(),"enabled":true}));
-            state.check_generation = 1;
-        }
-    }
-    #[cfg(not(windows))]
-    let _ = state;
-}
-
 fn strings(request: &Value, field: &str) -> Result<Vec<String>, String> {
     request[field].as_array().ok_or_else(|| format!("{field} 必须是列表"))?.iter()
         .map(|value| value.as_str().filter(|text| !text.is_empty()).map(str::to_owned).ok_or_else(|| format!("{field} 包含无效项目"))).collect()
@@ -88,12 +71,10 @@ pub(crate) fn discover(manager: &mut Manager, request: &Value) -> Result<Discove
             for event_path in &changed {
                 let event=local::canonical(event_path).unwrap_or_else(|_|event_path.clone());
                 if !event.starts_with(&root) {continue;}
-                let mut folder=if event.is_dir(){event}else{event.parent().unwrap_or(&root).to_owned()};
-                // A file event beneath an existing Skill is handled by the
-                // selected-ID refresh, not a second directory scan.
-                while folder!=root && !folder.join("SKILL.md").is_file() {
-                    let Some(parent)=folder.parent() else {break;}; folder=parent.to_owned();
-                }
+                // Unknown file events can only create a Skill through its
+                // entry file. Do not rescan a whole source for an unrelated
+                // download, database WAL, or cache write beneath the source.
+                let folder=if event.is_dir(){event}else if event.file_name().is_some_and(|name|name.to_string_lossy().eq_ignore_ascii_case("SKILL.md")){event.parent().unwrap_or(&root).to_owned()}else{continue;};
                 visit(&folder,0,&mut candidates,&mut result.errors);
             }
         }
@@ -126,8 +107,18 @@ fn persist(manager:&mut Manager, previous:State)->Result<Value,String>{
 
 pub(crate) fn handle(manager:&mut Manager,request:&Value)->Result<Option<Value>,String>{
     let action=request["action"].as_str().unwrap_or_default();
-    if !matches!(action,"set_check_mode"|"add_local_roots"|"update_local_root"|"remove_local_roots"|"restore_local_ignores"|"check_now"){return Ok(None);}
+    if !matches!(action,"set_check_mode"|"add_local_roots"|"update_local_root"|"remove_local_roots"|"restore_local_ignores"|"check_now"|"discover_local"){return Ok(None);}
     let previous=manager.state.clone();
+    if action=="discover_local" {
+        if request["automatic"]==true && (manager.state.check_mode!="auto" || request["checkGeneration"].as_u64()!=Some(manager.state.check_generation)){return Err("自动检查设置已改变，本次旧检查已停止".into());}
+        let discovery=discover(manager,request)?;
+        let previous_errors=previous.check_summary["rootErrors"].as_array().cloned().unwrap_or_default();
+        let current_errors:Vec<Value>=discovery.errors.iter().map(|error|json!(error)).collect();
+        let changed=discovery.imported>0||previous_errors!=current_errors;
+        let summary=json!({"newLocal":discovery.imported,"newRemote":0,"associated":0,"needsAttention":0,"errors":discovery.errors.len(),"rootErrors":discovery.errors,"changed":changed,"checkedAt":now()});
+        if changed{manager.state.check_summary=summary.clone();}
+        let mut value=persist(manager,previous)?;value["checkSummary"]=summary;value["discoveredSkillIds"]=json!(discovery.changed_ids);return Ok(Some(value));
+    }
     match action {
         "set_check_mode"=>{
             let mode=request["mode"].as_str().filter(|mode|matches!(*mode,"auto"|"manual")).ok_or("请选择自动检查或手动检查")?;
@@ -178,11 +169,22 @@ pub(crate) fn handle(manager:&mut Manager,request:&Value)->Result<Option<Value>,
         "check_now"=>{
             if request["automatic"]==true && (manager.state.check_mode!="auto" || request["checkGeneration"].as_u64()!=Some(manager.state.check_generation)){return Err("自动检查设置已改变，本次旧检查已停止".into());}
             let selected_only=request["automatic"]!=true && (request["skillIds"].is_array()||request["skillId"].is_string()) && !request["rootIds"].is_array();
-            let discovery=if request["remoteOnly"]==true || selected_only {Discovery::default()} else {discover(manager,request)?};
+            let discovery=if request["skipLocalDiscovery"]==true || request["remoteOnly"]==true || selected_only {Discovery::default()} else {discover(manager,request)?};
             let mut remote_request=request.clone();
+            if request["rootIds"].is_array() && !remote_request["skillIds"].is_array() {
+                let ids=strings(request,"rootIds")?;
+                let roots:Vec<_>=manager.state.local_roots.iter().filter(|root|root["id"].as_str().is_some_and(|id|ids.iter().any(|value|value==id))).filter_map(|root|root["resolvedPath"].as_str()).collect();
+                let selected:Vec<_>=manager.state.skills.iter().filter(|skill|skill["localPath"].as_str().is_some_and(|path|{
+                    let path=path_key(Path::new(path));let separator=if cfg!(windows){"\\"}else{"/"};roots.iter().any(|root|{let root=path_key(Path::new(root));path==root||path.starts_with(&(root+separator))})
+                })).map(|skill|skill["id"].clone()).collect();
+                remote_request["skillIds"]=json!(selected);remote_request["discoveryOnly"]=json!(true);
+            }
             if let Some(ids)=remote_request["skillIds"].as_array_mut(){for id in &discovery.changed_ids{if !ids.iter().any(|value|value==id){ids.push(json!(id));}}}
             if request["discoveryOnly"]==true && !remote_request["skillIds"].is_array(){remote_request["skillIds"]=json!(discovery.changed_ids);}
-            let mut value=if request["discoveryOnly"]==true && remote_request["skillIds"].as_array().is_some_and(Vec::is_empty){manager.snapshot()}else{crate::remote::check(manager,&remote_request)?};
+            // Discovery is visible immediately; slow/offline GitHub must never
+            // postpone registration of an already valid local Skill.
+            if discovery.imported>0 {manager.save()?;}
+            let mut value=if remote_request["discoveryOnly"]==true && remote_request["skillIds"].as_array().is_some_and(Vec::is_empty){manager.snapshot()}else{crate::remote::check(manager,&remote_request)?};
             let mut summary=value["checkSummary"].as_object().cloned().unwrap_or_default();
             summary.insert("imported".into(),json!(discovery.imported));
             summary.insert("newLocal".into(),json!(discovery.imported));

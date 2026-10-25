@@ -679,6 +679,8 @@ fn dependency_tokens(
     let visible = without_fenced_examples(text);
     let mut found = BTreeSet::new();
     let mut historical_section: Option<usize> = None;
+    let mut spaced_paths: Vec<_> = all.keys().filter(|path|path.chars().any(|c|c.is_whitespace()||"()[]".contains(c))).collect();
+    spaced_paths.sort_by_key(|path|std::cmp::Reverse(path.len()));
     for line in visible.lines() {
         let trimmed = line.trim_start();
         let heading = trimmed.chars().take_while(|c| *c == '#').count();
@@ -821,9 +823,7 @@ fn dependency_tokens(
         // Existing bare filenames with spaces/punctuation are still exact
         // evidence. Match the longest actual package path before fallback
         // tokenisation; never guess a missing filename from whitespace.
-        let mut spaced: Vec<_> = all.keys().filter(|path| path.chars().any(|c|c.is_whitespace()||"()[]".contains(c))).collect();
-        spaced.sort_by_key(|path|std::cmp::Reverse(path.len()));
-        for path in spaced {
+        for path in &spaced_paths {
             let positions: Vec<_> = masked.match_indices(path.as_str()).filter_map(|(index,_)| {
                 let before=masked[..index].chars().next_back();
                 let after=masked[index+path.len()..].chars().next();
@@ -831,7 +831,7 @@ fn dependency_tokens(
                     && !after.is_some_and(|c|c.is_ascii_alphanumeric()||"/\\_.-".contains(c))).then_some(index)
             }).collect();
             for index in positions.into_iter().rev() {
-                add(path.clone(),false);
+                add((*path).clone(),false);
                 masked.replace_range(index..index+path.len()," ");
             }
         }

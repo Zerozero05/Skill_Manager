@@ -127,3 +127,7 @@ The supplied GPT image informed dark main #181818, sidebar #1c1a1e and input #36
 - 云端候选上传复用官方 [actions/upload-artifact v7.0.2](https://github.com/actions/upload-artifact/tree/cf430e030ddbb5b0abf93d22962f4752f3646cd9)，固定精确提交、最小读取权限、7天保留；只生成工作流产物，不创建Release或标签。
 
 - 实际React hooks故障回归使用MIT许可的开发测试依赖[jsdom 30.1.3](https://github.com/jsdom/jsdom/releases/tag/v30.1.3)，配合既有ReactDOM与TypeScript；仅测试环境使用，不进入应用运行包。生产依赖锁定版本保持。
+
+## v0.2.9 本地事件与增量检查
+
+- 固定依赖 [notify 8.2.1](https://github.com/notify-rs/notify/tree/notify-8.2.1)：复用 Windows 原生 ReadDirectoryChangesW，项目自行实现防抖、目录授权范围、代际隔离、单调度和空轮次去重。notify 为 CC0-1.0；notify-types 及依赖保留各自许可。没有复制第三方管理器整套代码或改变已有来源规则。

@@ -283,6 +283,7 @@ pub fn merge(local: &Value, remote: &Value, note: &str) -> Value {
     merged["favorite"] = json!(local["favorite"] == true || remote["favorite"] == true);
     // Installation provenance and runtime choices belong to the retained local record.
     merged["associationNote"] = json!(note);
+    merged["associationPending"] = json!(false);
     merged["remoteMissing"] = json!(false);
     merged["remoteCheckRequired"] = json!(true);
     merged["error"] = Value::Null;

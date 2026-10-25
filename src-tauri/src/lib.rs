@@ -1,11 +1,11 @@
 mod audit;
 mod categories;
+mod checks;
 mod clients;
 mod export_plan;
 mod external;
 mod local;
 mod local_roots;
-mod checks;
 mod model;
 mod network;
 mod remote;
