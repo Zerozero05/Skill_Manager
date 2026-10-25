@@ -691,7 +691,11 @@ impl Registry {
         self.close_preserves_runtime = false;
     }
     fn cancel_close_id(&mut self, close_id: &str) -> bool {
-        if !self.close.as_ref().is_some_and(|close| close.id == close_id) {
+        if !self
+            .close
+            .as_ref()
+            .is_some_and(|close| close.id == close_id)
+        {
             return false;
         }
         self.clear_close();
@@ -1257,7 +1261,9 @@ impl WorkspaceSystem {
         ) {
             let (response, event) = match action {
                 "workspace_get_export_selection" => r.get_export_selection(label, request)?,
-                "workspace_read_export_selection" => (r.read_export_selection(label, request)?, None),
+                "workspace_read_export_selection" => {
+                    (r.read_export_selection(label, request)?, None)
+                }
                 "workspace_update_export_selection" => r.update_export_selection(label, request)?,
                 _ if self.migrating.load(Ordering::SeqCst) => {
                     (json!({"released":false,"ignored":true}), None)
@@ -1719,7 +1725,10 @@ mod tests {
         assert_eq!(r.cancel_owned_close("main", "close-main"), Some(false));
         assert!(!r.closing_windows.contains("main"));
         assert!(r.closing_windows.contains("workspace-child"));
-        assert_eq!(r.close_owners.get("workspace-child").unwrap(), "close-child");
+        assert_eq!(
+            r.close_owners.get("workspace-child").unwrap(),
+            "close-child"
+        );
     }
     #[test]
     fn failed_initial_flush_releases_only_its_unstarted_native_request() {
