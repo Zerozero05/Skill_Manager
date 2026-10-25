@@ -1069,8 +1069,7 @@ fn auto_associate_selected(
     let pairs = association::unique_pairs(&local_identities, &remote_identities);
     let matched: BTreeSet<_> = pairs.iter().map(|(id, _)| id.clone()).collect();
     let complete_sources = m.state.sources.iter().all(|source| {
-        source["error"].is_null()
-            && snapshots.contains_key(source["id"].as_str().unwrap_or(""))
+        source["error"].is_null() && snapshots.contains_key(source["id"].as_str().unwrap_or(""))
     });
     for identity in local_identities.iter().filter(|i| !matched.contains(&i.id)) {
         if remote_identities.iter().any(|candidate| {
@@ -1079,16 +1078,9 @@ fn auto_associate_selected(
                     .get(&candidate.id)
                     .is_some_and(|remote| remote["remoteMissing"] != true)
         }) {
-            if let Some(local) = m
-                .state
-                .skills
-                .iter_mut()
-                .find(|s| {
-                    s["id"] == identity.id
-                        && s["sourceId"].is_null()
-                        && refresh_matches(selected, s)
-                })
-            {
+            if let Some(local) = m.state.skills.iter_mut().find(|s| {
+                s["id"] == identity.id && s["sourceId"].is_null() && refresh_matches(selected, s)
+            }) {
                 local["associationPending"] = json!(!protected_record(local));
                 local["associationNote"] = json!(if !identity.eligible {
                     "本地项目受托管保护、身份未核实或已有来源，保留独立记录"
@@ -1097,9 +1089,12 @@ fn auto_associate_selected(
                 });
             }
         } else if complete_sources {
-            if let Some(local) = m.state.skills.iter_mut().find(|skill| {
-                skill["id"] == identity.id && refresh_matches(selected, skill)
-            }) {
+            if let Some(local) = m
+                .state
+                .skills
+                .iter_mut()
+                .find(|skill| skill["id"] == identity.id && refresh_matches(selected, skill))
+            {
                 if local["associationPending"] == true {
                     local["associationPending"] = json!(false);
                     local["associationNote"] = Value::Null;
@@ -1230,14 +1225,9 @@ fn refresh(m: &mut Manager, req: &Value) -> Result<Value, String> {
     let remote_only = req["remoteOnly"] == true;
     let mut snapshots = BTreeMap::new();
     // Local declarations remain readable even when the remote request later fails.
-    for skill in m
-        .state
-        .skills
-        .iter_mut()
-        .filter(|s| {
-            !remote_only && s["localPath"].as_str().is_some() && refresh_matches(&selected, s)
-        })
-    {
+    for skill in m.state.skills.iter_mut().filter(|s| {
+        !remote_only && s["localPath"].as_str().is_some() && refresh_matches(&selected, s)
+    }) {
         refresh_declared_local_version(skill);
         match current_hashes(skill) {
             Ok(current) => {
@@ -1386,9 +1376,7 @@ fn refresh(m: &mut Manager, req: &Value) -> Result<Value, String> {
         .state
         .skills
         .iter_mut()
-        .filter(|s| {
-            !remote_only && s["sourceId"].is_null() && refresh_matches(&selected, s)
-        })
+        .filter(|s| !remote_only && s["sourceId"].is_null() && refresh_matches(&selected, s))
     {
         skill["lastChecked"] = json!(now());
         match current_hashes(skill) {
@@ -1411,7 +1399,8 @@ fn refresh(m: &mut Manager, req: &Value) -> Result<Value, String> {
         preserve_unselected(&mut m.state.skills, &previous.skills, &selected);
     }
     for source in &mut m.state.sources {
-        if snapshots.contains_key(source["id"].as_str().unwrap_or("")) && source["error"].is_null() {
+        if snapshots.contains_key(source["id"].as_str().unwrap_or("")) && source["error"].is_null()
+        {
             let already_discovered = previous
                 .sources
                 .iter()
@@ -1566,7 +1555,12 @@ pub(crate) fn check(m: &mut Manager, req: &Value) -> Result<Value, String> {
                 || skill["associationPending"] == true
         })
         .count();
-    let association_pending = m.state.skills.iter().filter(|skill| skill["associationPending"] == true).count();
+    let association_pending = m
+        .state
+        .skills
+        .iter()
+        .filter(|skill| skill["associationPending"] == true)
+        .count();
     result["checkSummary"] = json!({"newRemote":new_remote,"associated":associated,"associationPending":association_pending,"needsAttention":attention,"errors":errors});
     Ok(result)
 }

@@ -223,11 +223,16 @@ impl TaskSystem {
             .migrate(preview_id, |destination| manager.copy_database(destination))
     }
     #[cfg(test)]
-    pub(crate) fn match_external_background(self:&Arc<Self>,after:Option<String>)->std::thread::JoinHandle<()>{self.match_external_background_for(after,None)}
+    pub(crate) fn match_external_background(
+        self: &Arc<Self>,
+        after: Option<String>,
+    ) -> std::thread::JoinHandle<()> {
+        self.match_external_background_for(after, None)
+    }
     fn match_external_background_for(
         self: &Arc<Self>,
         after: Option<String>,
-        selected:Option<Vec<Value>>,
+        selected: Option<Vec<Value>>,
     ) -> std::thread::JoinHandle<()> {
         let weak = Arc::downgrade(self);
         std::thread::spawn(move || {
@@ -243,7 +248,12 @@ impl TaskSystem {
                 }
                 let generation = snapshot["checkGeneration"].clone();
                 for skill in snapshot["skills"].as_array().into_iter().flatten() {
-                    if selected.as_ref().is_some_and(|ids|!ids.contains(&skill["id"])){continue;}
+                    if selected
+                        .as_ref()
+                        .is_some_and(|ids| !ids.contains(&skill["id"]))
+                    {
+                        continue;
+                    }
                     if service.closing.load(Ordering::Relaxed) {
                         break;
                     }
@@ -352,7 +362,7 @@ impl TaskSystem {
     }
 
     pub(crate) fn automatic_check(self: &Arc<Self>, request: Value) -> Result<(), String> {
-        let selected=request["skillIds"].as_array().cloned();
+        let selected = request["skillIds"].as_array().cloned();
         let task = self.start(
             request,
             Some("正在检查变化"),
@@ -369,7 +379,7 @@ impl TaskSystem {
                 .is_ok_and(|value| value["checkSummary"]["changed"] == true);
             service.release_compat(&id);
             if changed {
-                let _ = service.match_external_background_for(None,selected);
+                let _ = service.match_external_background_for(None, selected);
             }
         });
         Ok(())
@@ -377,22 +387,45 @@ impl TaskSystem {
 
     /// Local discovery has its own short metadata task. It can finish while a
     /// remote check is waiting on the network, then queue association afterward.
-    pub(crate) fn automatic_local_check(self:&Arc<Self>,mut request:Value)->Result<(),String>{
-        request["action"]=json!("discover_local");
-        let task=self.start(request.clone(),Some("正在发现本地 Skill"),None,false,false,crate::dispatch)?;
-        let id=task["id"].as_str().ok_or("Invalid task ID")?.to_owned();let service=self.clone();
-        std::thread::spawn(move||{
-            let result=service.wait(&id);service.release_compat(&id);
-            if let Ok(result)=result{
-                let mut ids=request["skillIds"].as_array().cloned().unwrap_or_default();
-                for id in result["discoveredSkillIds"].as_array().into_iter().flatten(){if !ids.contains(id){ids.push(id.clone());}}
-                if request["full"]==true||!ids.is_empty(){
-                    let mut check=json!({"action":"check_now","automatic":true,"checkGeneration":request["checkGeneration"],"skipLocalDiscovery":true});
-                    if request["full"]!=true{check["skillIds"]=json!(ids);}
-                    let _=service.automatic_check(check);
+    pub(crate) fn automatic_local_check(
+        self: &Arc<Self>,
+        mut request: Value,
+    ) -> Result<(), String> {
+        request["action"] = json!("discover_local");
+        let task = self.start(
+            request.clone(),
+            Some("正在发现本地 Skill"),
+            None,
+            false,
+            false,
+            crate::dispatch,
+        )?;
+        let id = task["id"].as_str().ok_or("Invalid task ID")?.to_owned();
+        let service = self.clone();
+        std::thread::spawn(move || {
+            let result = service.wait(&id);
+            service.release_compat(&id);
+            if let Ok(result) = result {
+                let mut ids = request["skillIds"].as_array().cloned().unwrap_or_default();
+                for id in result["discoveredSkillIds"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    if !ids.contains(id) {
+                        ids.push(id.clone());
+                    }
+                }
+                if request["full"] == true || !ids.is_empty() {
+                    let mut check = json!({"action":"check_now","automatic":true,"checkGeneration":request["checkGeneration"],"skipLocalDiscovery":true});
+                    if request["full"] != true {
+                        check["skillIds"] = json!(ids);
+                    }
+                    let _ = service.automatic_check(check);
                 }
             }
-        });Ok(())
+        });
+        Ok(())
     }
 
     pub(crate) fn cancel_automatic(&self) {
@@ -1368,9 +1401,19 @@ fn merge_records(
         .iter()
         .filter(|item| !before.iter().any(|prior| prior["id"] == item["id"]))
     {
-        if kind=="Skill" && item["localPath"].as_str().is_some_and(|path|{
-            let key=path_key(path);merged.iter().any(|live|live["id"]!=item["id"] && live["localPath"].as_str().is_some_and(|path|path_key(path)==key))
-        }) {return Err("相同实际目录已登记，本次过期发现结果未写入".into());}
+        if kind == "Skill"
+            && item["localPath"].as_str().is_some_and(|path| {
+                let key = path_key(path);
+                merged.iter().any(|live| {
+                    live["id"] != item["id"]
+                        && live["localPath"]
+                            .as_str()
+                            .is_some_and(|path| path_key(path) == key)
+                })
+            })
+        {
+            return Err("相同实际目录已登记，本次过期发现结果未写入".into());
+        }
         if let Some(live) = merged.iter().find(|live| live["id"] == item["id"]) {
             if live != item {
                 return Err(format!("{kind}记录已存在，请刷新后操作"));
@@ -1572,7 +1615,9 @@ fn resources_for(manager: &Manager, request: &Value) -> Result<Vec<Resource>, St
     if action == "check_now" {
         add("sources:discovery".into(), true);
     }
-    if matches!(action,"discover_local"|"add_local"|"add_local_roots"){add("local:discovery".into(),true);}
+    if matches!(action, "discover_local" | "add_local" | "add_local_roots") {
+        add("local:discovery".into(), true);
+    }
     if action == "set_network_settings" {
         add("settings:network".into(), true);
     }
@@ -1952,7 +1997,9 @@ mod tests {
         }
         let (_dir, service) = fixture();
         {
-            let mut manager=service.manager.lock().unwrap();manager.state.check_summary=json!({"changed":true,"newLocal":1});manager.save().unwrap();
+            let mut manager = service.manager.lock().unwrap();
+            manager.state.check_summary = json!({"changed":true,"newLocal":1});
+            manager.save().unwrap();
         }
         let revision = service.snapshot().unwrap()["stateRevision"].clone();
         let task = service
@@ -1965,8 +2012,8 @@ mod tests {
                 noop,
             )
             .unwrap();
-        let result=service.wait(task["id"].as_str().unwrap()).unwrap();
-        assert_eq!(result["checkSummary"]["changed"],false);
+        let result = service.wait(task["id"].as_str().unwrap()).unwrap();
+        assert_eq!(result["checkSummary"]["changed"], false);
         assert_eq!(service.snapshot().unwrap()["stateRevision"], revision);
         assert!(service.list().unwrap().is_empty());
     }
@@ -1991,26 +2038,59 @@ mod tests {
     }
 
     #[test]
-    fn new_local_skill_registers_while_remote_task_is_blocked(){
-        let (dir,service)=fixture();let root=dir.path().join("local");std::fs::create_dir(&root).unwrap();
-        service.execute(json!({"action":"add_local_roots","paths":[root]}),crate::dispatch).unwrap();
-        let generation=service.snapshot().unwrap()["checkGeneration"].clone();
-        let (hold_id,latch)=new_latch();
-        let remote=service.start(json!({"action":"check_now","automatic":true,"checkGeneration":generation,"remoteOnly":true,"hold":hold_id}),None,None,false,false,fake_dispatch).unwrap();entered(&latch);
-        let skill=root.join("new");std::fs::create_dir(&skill).unwrap();std::fs::write(skill.join("SKILL.md"),"---\nname: new\ndescription: synthetic\n---\nUse it.\n").unwrap();
+    fn new_local_skill_registers_while_remote_task_is_blocked() {
+        let (dir, service) = fixture();
+        let root = dir.path().join("local");
+        std::fs::create_dir(&root).unwrap();
+        service
+            .execute(
+                json!({"action":"add_local_roots","paths":[root]}),
+                crate::dispatch,
+            )
+            .unwrap();
+        let generation = service.snapshot().unwrap()["checkGeneration"].clone();
+        let (hold_id, latch) = new_latch();
+        let remote=service.start(json!({"action":"check_now","automatic":true,"checkGeneration":generation,"remoteOnly":true,"hold":hold_id}),None,None,false,false,fake_dispatch).unwrap();
+        entered(&latch);
+        let skill = root.join("new");
+        std::fs::create_dir(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: new\ndescription: synthetic\n---\nUse it.\n",
+        )
+        .unwrap();
         let discovery=service.start(json!({"action":"discover_local","automatic":true,"checkGeneration":generation,"skillIds":[],"changedPaths":[skill.join("SKILL.md")]}),None,None,false,false,crate::dispatch).unwrap();
-        let id=discovery["id"].as_str().unwrap();task_status(&service,id,"succeeded");
-        let result=service.wait(id).unwrap();assert_eq!(result["discoveredSkillIds"].as_array().unwrap().len(),1);
-        assert_eq!(service.snapshot().unwrap()["skills"].as_array().unwrap().len(),4);
-        assert_eq!(service.get(remote["id"].as_str().unwrap(),false).unwrap()["status"],"running");
-        release(&latch);service.wait(remote["id"].as_str().unwrap()).unwrap();
+        let id = discovery["id"].as_str().unwrap();
+        task_status(&service, id, "succeeded");
+        let result = service.wait(id).unwrap();
+        assert_eq!(result["discoveredSkillIds"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            service.snapshot().unwrap()["skills"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert_eq!(
+            service.get(remote["id"].as_str().unwrap(), false).unwrap()["status"],
+            "running"
+        );
+        release(&latch);
+        service.wait(remote["id"].as_str().unwrap()).unwrap();
     }
 
     #[test]
-    fn concurrent_same_real_local_directory_is_rejected_without_duplicate_records(){
-        let (dir,service)=fixture();let folder=dir.path().join("skill");std::fs::create_dir(&folder).unwrap();let before=service.manager.lock().unwrap().state.clone();let mut after=before.clone();let mut live=before.clone();
-        after.skills.push(json!({"id":"first","localPath":folder}));live.skills.push(json!({"id":"second","localPath":folder}));
-        assert!(merge_state(&before,&after,&live,"discover_local").is_err());assert_eq!(live.skills.len(),4);
+    fn concurrent_same_real_local_directory_is_rejected_without_duplicate_records() {
+        let (dir, service) = fixture();
+        let folder = dir.path().join("skill");
+        std::fs::create_dir(&folder).unwrap();
+        let before = service.manager.lock().unwrap().state.clone();
+        let mut after = before.clone();
+        let mut live = before.clone();
+        after.skills.push(json!({"id":"first","localPath":folder}));
+        live.skills.push(json!({"id":"second","localPath":folder}));
+        assert!(merge_state(&before, &after, &live, "discover_local").is_err());
+        assert_eq!(live.skills.len(), 4);
     }
 
     #[test]

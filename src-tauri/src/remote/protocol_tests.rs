@@ -468,17 +468,25 @@ fn fixture(server: &Server) -> Fixture {
 
 #[test]
 fn v029_selected_check_discovers_external_upload_and_preserves_other_records() {
-    let body = b"---\nname: protocol-skill\ndescription: synthetic\n---\nUse the selected runtime.\n";
+    let body =
+        b"---\nname: protocol-skill\ndescription: synthetic\n---\nUse the selected runtime.\n";
     let server = Server::new(&[
         ("skills/protocol-skill/SKILL.md", body),
-        ("skills/unrelated/SKILL.md", b"---\nname: unrelated\n---\nOther skill.\n"),
+        (
+            "skills/unrelated/SKILL.md",
+            b"---\nname: unrelated\n---\nOther skill.\n",
+        ),
     ]);
     let _transport = server.transport();
     let mut fixture = fixture(&server);
     fixture.manager.state.sources[0]["roots"] = json!(["skills"]);
     let untouched = json!({"id":"other-local","name":"other","status":"local_only","categoryId":"other-category","favorite":true});
     fixture.manager.state.skills.push(untouched.clone());
-    fixture.manager.state.connections.push(json!({"id":"connection","skillId":"local-id","target":"synthetic-client-entry"}));
+    fixture
+        .manager
+        .state
+        .connections
+        .push(json!({"id":"connection","skillId":"local-id","target":"synthetic-client-entry"}));
     let before_files = local::files(&fixture.root).unwrap();
     let result = check(&mut fixture.manager, &json!({"skillIds":["local-id"]})).unwrap();
     let local = fixture.manager.skill("local-id").unwrap();
@@ -493,17 +501,36 @@ fn v029_selected_check_discovers_external_upload_and_preserves_other_records() {
     assert_eq!(fixture.manager.skill("other-local").unwrap(), untouched);
     assert_eq!(fixture.manager.state.connections[0]["skillId"], "local-id");
     assert_eq!(local::files(&fixture.root).unwrap(), before_files);
-    let next = check(&mut fixture.manager, &json!({"automatic":true,"remoteOnly":true})).unwrap();
-    assert_eq!(next["checkSummary"]["newRemote"], 1, "A selected check must not consume unrelated discovery for the next full tick");
+    let next = check(
+        &mut fixture.manager,
+        &json!({"automatic":true,"remoteOnly":true}),
+    )
+    .unwrap();
+    assert_eq!(
+        next["checkSummary"]["newRemote"], 1,
+        "A selected check must not consume unrelated discovery for the next full tick"
+    );
     assert_eq!(fixture.manager.skill("other-local").unwrap(), untouched);
-    assert!(fixture.manager.state.skills.iter().any(|skill| skill["remotePath"] == "skills/unrelated"));
-    assert!(server.state.lock().unwrap().requests.iter().all(|request| request.method == "GET"));
+    assert!(fixture
+        .manager
+        .state
+        .skills
+        .iter()
+        .any(|skill| skill["remotePath"] == "skills/unrelated"));
+    assert!(server
+        .state
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .all(|request| request.method == "GET"));
     server.assert_clean();
 }
 
 #[test]
 fn v029_selected_discovery_keeps_ambiguous_remote_candidates_unassociated() {
-    let body = b"---\nname: protocol-skill\ndescription: synthetic\n---\nUse the selected runtime.\n";
+    let body =
+        b"---\nname: protocol-skill\ndescription: synthetic\n---\nUse the selected runtime.\n";
     let server = Server::new(&[
         ("skills/protocol-skill/SKILL.md", body),
         ("skills/copy/SKILL.md", body),
@@ -516,14 +543,23 @@ fn v029_selected_discovery_keeps_ambiguous_remote_candidates_unassociated() {
     assert_eq!(fixture.manager.state.skills.len(), 1);
     assert_eq!(result["checkSummary"]["associated"], 0);
     assert_eq!(result["checkSummary"]["associationPending"], 1);
-    assert_eq!(fixture.manager.skill("local-id").unwrap()["associationPending"], true);
-    assert!(fixture.manager.skill("local-id").unwrap()["associationNote"].as_str().unwrap().contains("不唯一"));
+    assert_eq!(
+        fixture.manager.skill("local-id").unwrap()["associationPending"],
+        true
+    );
+    assert!(
+        fixture.manager.skill("local-id").unwrap()["associationNote"]
+            .as_str()
+            .unwrap()
+            .contains("不唯一")
+    );
     server.assert_clean();
 }
 
 #[test]
 fn v029_unchanged_automatic_tick_only_probes_commit_without_state_or_file_reads() {
-    let body = b"---\nname: protocol-skill\ndescription: synthetic\n---\nUse the selected runtime.\n";
+    let body =
+        b"---\nname: protocol-skill\ndescription: synthetic\n---\nUse the selected runtime.\n";
     let server = Server::new(&[("skills/protocol-skill/SKILL.md", body)]);
     let _transport = server.transport();
     let mut fixture = fixture(&server);
@@ -535,8 +571,15 @@ fn v029_unchanged_automatic_tick_only_probes_commit_without_state_or_file_reads(
     // Local changes belong to the native watcher/dirty-Skill task, rather than
     // forcing another directory inventory during every remote commit probe.
     fs::remove_file(fixture.root.join("SKILL.md")).unwrap();
-    check(&mut fixture.manager, &json!({"automatic":true,"remoteOnly":true})).unwrap();
-    assert_eq!(serde_json::to_value(&fixture.manager.state).unwrap(), before);
+    check(
+        &mut fixture.manager,
+        &json!({"automatic":true,"remoteOnly":true}),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&fixture.manager.state).unwrap(),
+        before
+    );
     assert_eq!(fixture.manager.snapshot()["stateRevision"], before_revision);
     fs::write(fixture.root.join("SKILL.md"), &fixture.original_runtime).unwrap();
     {
@@ -545,29 +588,71 @@ fn v029_unchanged_automatic_tick_only_probes_commit_without_state_or_file_reads(
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].route, vec!["commits", "main"]);
     }
-    server.advance(Some(("skills/new-upload/SKILL.md", b"---\nname: new-upload\n---\nA new remote skill.\n")));
-    let result = check(&mut fixture.manager, &json!({"automatic":true,"remoteOnly":true})).unwrap();
+    server.advance(Some((
+        "skills/new-upload/SKILL.md",
+        b"---\nname: new-upload\n---\nA new remote skill.\n",
+    )));
+    let result = check(
+        &mut fixture.manager,
+        &json!({"automatic":true,"remoteOnly":true}),
+    )
+    .unwrap();
     assert_eq!(result["checkSummary"]["newRemote"], 1);
-    assert!(fixture.manager.state.skills.iter().any(|skill| skill["remotePath"] == "skills/new-upload"));
+    assert!(fixture
+        .manager
+        .state
+        .skills
+        .iter()
+        .any(|skill| skill["remotePath"] == "skills/new-upload"));
     assert!(fixture.manager.skill("local-id").unwrap()["installedCommit"].is_null());
-    assert!(server.state.lock().unwrap().requests.iter().all(|request| request.method == "GET"));
+    assert!(server
+        .state
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .all(|request| request.method == "GET"));
     server.assert_clean();
 }
 
 #[test]
 fn v029_periodic_discovery_obeys_source_scope_and_ignored_paths() {
     let server = Server::new(&[
-        ("skills/hidden/SKILL.md", b"---\nname: hidden\n---\nHidden.\n"),
-        ("outside/elsewhere/SKILL.md", b"---\nname: elsewhere\n---\nOutside.\n"),
-        ("skills/visible/SKILL.md", b"---\nname: visible\n---\nVisible.\n"),
+        (
+            "skills/hidden/SKILL.md",
+            b"---\nname: hidden\n---\nHidden.\n",
+        ),
+        (
+            "outside/elsewhere/SKILL.md",
+            b"---\nname: elsewhere\n---\nOutside.\n",
+        ),
+        (
+            "skills/visible/SKILL.md",
+            b"---\nname: visible\n---\nVisible.\n",
+        ),
     ]);
     let _transport = server.transport();
     let mut fixture = fixture(&server);
     fixture.manager.state.sources[0]["roots"] = json!(["skills"]);
     fixture.manager.state.sources[0]["ignoredPaths"] = json!(["skills/hidden"]);
-    check(&mut fixture.manager, &json!({"automatic":true,"remoteOnly":true})).unwrap();
-    assert!(fixture.manager.state.skills.iter().any(|skill| skill["remotePath"] == "skills/visible"));
-    assert!(!fixture.manager.state.skills.iter().any(|skill| skill["remotePath"] == "skills/hidden" || skill["remotePath"] == "outside/elsewhere"));
+    check(
+        &mut fixture.manager,
+        &json!({"automatic":true,"remoteOnly":true}),
+    )
+    .unwrap();
+    assert!(fixture
+        .manager
+        .state
+        .skills
+        .iter()
+        .any(|skill| skill["remotePath"] == "skills/visible"));
+    assert!(!fixture
+        .manager
+        .state
+        .skills
+        .iter()
+        .any(|skill| skill["remotePath"] == "skills/hidden"
+            || skill["remotePath"] == "outside/elsewhere"));
     server.assert_clean();
 }
 fn action(manager: &mut Manager, request: Value) -> Result<Value, String> {

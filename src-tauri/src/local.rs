@@ -632,9 +632,9 @@ fn prose_path_segments<'a>(value: &'a str, all: &BTreeMap<String, String>) -> Ve
                     return None;
                 }
                 [
-                    "md", "mdx", "tex", "txt", "rst", "yaml", "yml", "json", "toml",
-                    "py", "ps1", "sh", "js", "ts", "tsx", "jsx", "html", "css", "svg",
-                    "png", "jpg", "jpeg", "pdf", "csv", "xml", "patch", "ini", "cfg",
+                    "md", "mdx", "tex", "txt", "rst", "yaml", "yml", "json", "toml", "py", "ps1",
+                    "sh", "js", "ts", "tsx", "jsx", "html", "css", "svg", "png", "jpg", "jpeg",
+                    "pdf", "csv", "xml", "patch", "ini", "cfg",
                 ]
                 .iter()
                 .filter_map(|extension| {
@@ -643,10 +643,12 @@ fn prose_path_segments<'a>(value: &'a str, all: &BTreeMap<String, String>) -> Ve
                         return None;
                     }
                     let tail = &rest[end..];
-                    ["和", "与", "及", "或", "以", "为", "是", "用于", "作为", "需要"]
-                        .iter()
-                        .any(|word| tail.starts_with(word))
-                        .then_some(end)
+                    [
+                        "和", "与", "及", "或", "以", "为", "是", "用于", "作为", "需要",
+                    ]
+                    .iter()
+                    .any(|word| tail.starts_with(word))
+                    .then_some(end)
                 })
                 .max()
             })
@@ -679,8 +681,14 @@ fn dependency_tokens(
     let visible = without_fenced_examples(text);
     let mut found = BTreeSet::new();
     let mut historical_section: Option<usize> = None;
-    let mut spaced_paths: Vec<_> = all.keys().filter(|path|path.chars().any(|c|c.is_whitespace()||"()[]".contains(c))).collect();
-    spaced_paths.sort_by_key(|path|std::cmp::Reverse(path.len()));
+    let mut spaced_paths: Vec<_> = all
+        .keys()
+        .filter(|path| {
+            path.chars()
+                .any(|c| c.is_whitespace() || "()[]".contains(c))
+        })
+        .collect();
+    spaced_paths.sort_by_key(|path| std::cmp::Reverse(path.len()));
     for line in visible.lines() {
         let trimmed = line.trim_start();
         let heading = trimmed.chars().take_while(|c| *c == '#').count();
@@ -824,15 +832,20 @@ fn dependency_tokens(
         // evidence. Match the longest actual package path before fallback
         // tokenisation; never guess a missing filename from whitespace.
         for path in &spaced_paths {
-            let positions: Vec<_> = masked.match_indices(path.as_str()).filter_map(|(index,_)| {
-                let before=masked[..index].chars().next_back();
-                let after=masked[index+path.len()..].chars().next();
-                (!before.is_some_and(|c|c.is_ascii_alphanumeric()||"/\\_-".contains(c))
-                    && !after.is_some_and(|c|c.is_ascii_alphanumeric()||"/\\_.-".contains(c))).then_some(index)
-            }).collect();
+            let positions: Vec<_> = masked
+                .match_indices(path.as_str())
+                .filter_map(|(index, _)| {
+                    let before = masked[..index].chars().next_back();
+                    let after = masked[index + path.len()..].chars().next();
+                    (!before.is_some_and(|c| c.is_ascii_alphanumeric() || "/\\_-".contains(c))
+                        && !after
+                            .is_some_and(|c| c.is_ascii_alphanumeric() || "/\\_.-".contains(c)))
+                    .then_some(index)
+                })
+                .collect();
             for index in positions.into_iter().rev() {
-                add((*path).clone(),false);
-                masked.replace_range(index..index+path.len()," ");
+                add((*path).clone(), false);
+                masked.replace_range(index..index + path.len(), " ");
             }
         }
         let normalized_line = masked
@@ -1696,9 +1709,11 @@ pub(crate) fn minimal_runtime_for_skill(
     let mut classification = runtime_file_selection(root, all, Some(&roots))?;
     let external = crate::external::inspect_issues(skill, root, all, &classification.issues);
     crate::external::apply_resolutions(&mut classification, &external);
-    if let Some(issue) = classification.issues.iter().find(|issue| {
-        issue.severity == "error" || issue.category == "uncertain"
-    }) {
+    if let Some(issue) = classification
+        .issues
+        .iter()
+        .find(|issue| issue.severity == "error" || issue.category == "uncertain")
+    {
         return Err(issue_warning(issue));
     }
     Ok(classification.required_files)
@@ -1710,27 +1725,38 @@ pub(crate) fn retire_obsolete_reference_bindings(
     skill: &mut Value,
     all: &BTreeMap<String, String>,
 ) {
-    let Ok(root) = local_root(skill) else { return; };
-    let Some(bindings) = skill["externalBindings"].as_array() else { return; };
+    let Ok(root) = local_root(skill) else {
+        return;
+    };
+    let Some(bindings) = skill["externalBindings"].as_array() else {
+        return;
+    };
     let mut active = Vec::new();
     let mut retired = Vec::new();
     for binding in bindings {
         let target = binding["target"].as_str().unwrap_or("");
         let source = binding["source"].as_str().unwrap_or("");
         let segments = prose_path_segments(target, all);
-        let obsolete = !all.contains_key(target) && segments.len() > 1
+        let obsolete = !all.contains_key(target)
+            && segments.len() > 1
             && segments.iter().all(|path| all.contains_key(*path))
-            && safe_join(&root, source).and_then(|path|read_text(&path))
-                .is_ok_and(|text|text.contains(target));
+            && safe_join(&root, source)
+                .and_then(|path| read_text(&path))
+                .is_ok_and(|text| text.contains(target));
         if obsolete {
             let mut entry = binding.clone();
             entry["retiredAt"] = json!(now());
             entry["reason"] = json!("旧分析器将连续中文说明误识别为一个路径；已按实际文件重新解析");
             retired.push(entry);
-        } else { active.push(binding.clone()); }
+        } else {
+            active.push(binding.clone());
+        }
     }
     if !retired.is_empty() {
-        let mut history = skill["externalBindingHistory"].as_array().cloned().unwrap_or_default();
+        let mut history = skill["externalBindingHistory"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         history.extend(retired);
         skill["externalBindings"] = json!(active);
         skill["externalBindingHistory"] = json!(history);
@@ -2307,7 +2333,9 @@ pub fn handle(m: &mut Manager, req: &Value) -> Result<Option<Value>, String> {
             for mut value in drafts {
                 let key = path_key(Path::new(value["localPath"].as_str().unwrap_or_default()));
                 let ignored_before = m.state.ignored_local_paths.len();
-                m.state.ignored_local_paths.retain(|path| path_key(Path::new(path)) != key);
+                m.state
+                    .ignored_local_paths
+                    .retain(|path| path_key(Path::new(path)) != key);
                 if ignored_before != m.state.ignored_local_paths.len() {
                     m.state.check_generation += 1;
                 }
@@ -2496,9 +2524,14 @@ pub fn handle(m: &mut Manager, req: &Value) -> Result<Option<Value>, String> {
             }
             let previous = m.state.clone();
             if let Some(path) = skill["localPath"].as_str() {
-                let path = canonical(Path::new(path)).unwrap_or_else(|_|PathBuf::from(path));
+                let path = canonical(Path::new(path)).unwrap_or_else(|_| PathBuf::from(path));
                 let path = readable_path(&path);
-                if !m.state.ignored_local_paths.iter().any(|old|path_key(Path::new(old))==path_key(Path::new(&path))) {
+                if !m
+                    .state
+                    .ignored_local_paths
+                    .iter()
+                    .any(|old| path_key(Path::new(old)) == path_key(Path::new(&path)))
+                {
                     m.state.ignored_local_paths.push(path);
                     m.state.check_generation += 1;
                 }
@@ -2613,17 +2646,28 @@ mod issue_tests {
     fn continuous_chinese_template_sentence_resolves_each_real_file_without_fragments() {
         let contents = BTreeMap::from([
             ("SKILL.md", "Read references/tex-output.md。"),
-            ("references/tex-output.md", "assets/model-extract.tex和assets/model-report.tex以@@UPPER_CASE@@标记待填项。"),
+            (
+                "references/tex-output.md",
+                "assets/model-extract.tex和assets/model-report.tex以@@UPPER_CASE@@标记待填项。",
+            ),
             ("assets/model-extract.tex", "template one"),
             ("assets/model-report.tex", "template two"),
         ]);
-        let all = contents.keys().map(|path|((*path).to_owned(),"hash".to_owned())).collect();
-        let selection = runtime_file_selection_with_reader(&all,None,|path|Ok(contents[path].into())).unwrap();
-        assert!(selection.issues.is_empty(),"{:?}",selection.issues);
-        for path in ["assets/model-extract.tex","assets/model-report.tex"] {
+        let all = contents
+            .keys()
+            .map(|path| ((*path).to_owned(), "hash".to_owned()))
+            .collect();
+        let selection =
+            runtime_file_selection_with_reader(&all, None, |path| Ok(contents[path].into()))
+                .unwrap();
+        assert!(selection.issues.is_empty(), "{:?}", selection.issues);
+        for path in ["assets/model-extract.tex", "assets/model-report.tex"] {
             assert!(selection.required_files.contains(&path.to_owned()));
         }
-        assert!(!selection.required_files.iter().any(|path|path.contains("标记") || path.contains("tex和")));
+        assert!(!selection
+            .required_files
+            .iter()
+            .any(|path| path.contains("标记") || path.contains("tex和")));
     }
 
     #[test]
@@ -2634,22 +2678,32 @@ mod issue_tests {
             ("assets/中文 模板 (最终).tex", "template one"),
             ("assets/另一个 (修订).tex", "template two"),
         ]);
-        let all = contents.keys().map(|path|((*path).to_owned(),"hash".to_owned())).collect();
-        let selection = runtime_file_selection_with_reader(&all,None,|path|Ok(contents[path].into())).unwrap();
-        assert!(selection.issues.is_empty(),"{:?}",selection.issues);
-        assert_eq!(selection.required_files.len(),4);
-        let bare = dependency_tokens("assets/模型.tex和说明.md",false,&all);
-        assert_eq!(bare.len(),1);
-        assert_eq!(bare[0].target,"assets/模型.tex和说明.md");
+        let all = contents
+            .keys()
+            .map(|path| ((*path).to_owned(), "hash".to_owned()))
+            .collect();
+        let selection =
+            runtime_file_selection_with_reader(&all, None, |path| Ok(contents[path].into()))
+                .unwrap();
+        assert!(selection.issues.is_empty(), "{:?}", selection.issues);
+        assert_eq!(selection.required_files.len(), 4);
+        let bare = dependency_tokens("assets/模型.tex和说明.md", false, &all);
+        assert_eq!(bare.len(), 1);
+        assert_eq!(bare[0].target, "assets/模型.tex和说明.md");
     }
 
     #[test]
     fn missing_continuous_paths_still_report_two_specific_missing_resources() {
-        let all = BTreeMap::from([("SKILL.md".to_owned(),"hash".to_owned())]);
-        let selection = runtime_file_selection_with_reader(&all,None,|_|Ok("assets/one.tex和assets/two.tex以占位符填写。".into())).unwrap();
-        assert_eq!(selection.issues.len(),2);
-        for target in ["assets/one.tex","assets/two.tex"] {
-            assert!(selection.issues.iter().any(|issue|issue.target==target&&issue.category=="package_required"&&issue.severity=="error"));
+        let all = BTreeMap::from([("SKILL.md".to_owned(), "hash".to_owned())]);
+        let selection = runtime_file_selection_with_reader(&all, None, |_| {
+            Ok("assets/one.tex和assets/two.tex以占位符填写。".into())
+        })
+        .unwrap();
+        assert_eq!(selection.issues.len(), 2);
+        for target in ["assets/one.tex", "assets/two.tex"] {
+            assert!(selection.issues.iter().any(|issue| issue.target == target
+                && issue.category == "package_required"
+                && issue.severity == "error"));
         }
     }
 
