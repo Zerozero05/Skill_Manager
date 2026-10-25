@@ -738,6 +738,43 @@ pub struct Snapshot {
     fresh: bool,
 }
 impl Snapshot {
+    /// A periodic check asks only for the moving commit first. Immutable trees
+    /// and blobs are loaded only when this source (or its local scope) changed.
+    pub(crate) fn probe(
+        repo: &str,
+        branch: Option<&str>,
+        known_commit: Option<&str>,
+        reuse_unchanged: bool,
+    ) -> Result<Option<Self>, String> {
+        let api = Api::new(repo)?;
+        let meta = if branch.is_none() {
+            Some(api.get(&[])?)
+        } else {
+            None
+        };
+        let branch = branch
+            .or_else(|| meta.as_ref().and_then(|v| v["default_branch"].as_str()))
+            .ok_or("Repository has no default branch")?
+            .to_owned();
+        let object = api.get(&["commits", &branch])?;
+        let commit = sha(&object["sha"])?;
+        if reuse_unchanged && known_commit == Some(commit.as_str()) {
+            return Ok(None);
+        }
+        let meta = match meta {
+            Some(value) => value,
+            None => api.get(&[])?,
+        };
+        Self::at(
+            api,
+            branch,
+            commit,
+            sha(&object["commit"]["tree"]["sha"])?,
+            meta["private"].as_bool().unwrap_or(true),
+        )
+        .map(Some)
+    }
+
     pub fn load(repo: &str, branch: Option<&str>) -> Result<Self, String> {
         let api = Api::new(repo)?;
         let meta = api.get(&[])?;

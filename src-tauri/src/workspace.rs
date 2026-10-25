@@ -135,7 +135,6 @@ struct Registry {
     export_selections: BTreeMap<String, ExportSelection>,
     export_version: u64,
     close: Option<CloseIntent>,
-    last_focus: Option<Instant>,
 }
 
 fn home_id(label: &str) -> String {
@@ -344,7 +343,6 @@ impl Registry {
             export_selections: BTreeMap::new(),
             export_version: 0,
             close: None,
-            last_focus: None,
         })
     }
     fn window(&self, label: &str) -> Result<&WindowRecord, String> {
@@ -933,46 +931,9 @@ impl WorkspaceSystem {
         prevent
     }
     fn schedule(self: &Arc<Self>) {
-        if self.started.swap(true, Ordering::SeqCst) {
-            return;
+        if !self.started.swap(true, Ordering::SeqCst) {
+            crate::checks::start(&self.service);
         }
-        let _ = self.service.background(
-            json!({"action":"refresh","localOnly":true}),
-            "正在刷新本地文件",
-            crate::dispatch,
-        );
-        let _ = self.service.background(
-            json!({"action":"refresh_clients"}),
-            "正在发现客户端连接",
-            crate::dispatch,
-        );
-        let audit = self.service.background(
-            json!({"action":"audit_skills"}),
-            "正在核对运行文件与远端内容",
-            crate::dispatch,
-        );
-        self.service.match_external_background(
-            audit
-                .ok()
-                .and_then(|task| task["id"].as_str().map(str::to_owned)),
-        );
-        let weak = Arc::downgrade(self);
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_secs(30 * 60));
-            let Some(s) = weak.upgrade() else {
-                break;
-            };
-            let refresh = s.service.background(
-                json!({"action":"refresh"}),
-                "正在检查本地与远端变化",
-                crate::dispatch,
-            );
-            s.service.match_external_background(
-                refresh
-                    .ok()
-                    .and_then(|task| task["id"].as_str().map(str::to_owned)),
-            );
-        });
     }
     pub(crate) fn inject_origin(&self, label: &str, request: &mut Value) -> Result<(), String> {
         if request["action"] != "start_task" {
@@ -1080,24 +1041,9 @@ impl WorkspaceSystem {
             self.schedule();
         }
         if action == "workspace_focus" {
-            let run = {
-                let mut r = self.registry.lock().map_err(|_| "Workspace lock failed")?;
-                let run = r
-                    .last_focus
-                    .is_none_or(|t| t.elapsed() >= Duration::from_secs(15));
-                if run {
-                    r.last_focus = Some(Instant::now());
-                }
-                run
-            };
-            if run {
-                let _ = self.service.background(
-                    json!({"action":"refresh","localOnly":true}),
-                    "正在刷新本地文件",
-                    crate::dispatch,
-                );
-            }
-            return Ok(Some(json!({"checked":run})));
+            // A single native watcher owns automatic checks. Focus never
+            // starts another scan, including in manual mode.
+            return Ok(Some(json!({"checked":false})));
         }
         if action == "workspace_detach" || action == "workspace_move" {
             let pane_id = identifier(request, "paneId")?;

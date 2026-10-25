@@ -90,6 +90,7 @@ struct Job {
     recorded: bool,
     consumers: usize,
     dedup: Option<String>,
+    automatic: bool,
 }
 fn history_records(jobs: &BTreeMap<String, Job>) -> Vec<Value> {
     let mut terminal: Vec<_> = jobs
@@ -161,6 +162,7 @@ impl TaskSystem {
                     recorded: true,
                     consumers: 0,
                     dedup: None,
+                    automatic: false,
                 },
             );
         }
@@ -233,6 +235,8 @@ impl TaskSystem {
                 let _ = service.wait(&id);
             }
             if let Ok(snapshot) = service.snapshot() {
+                if snapshot["checkMode"] != "auto" {return;}
+                let generation=snapshot["checkGeneration"].clone();
                 for skill in snapshot["skills"].as_array().into_iter().flatten() {
                     if service.closing.load(Ordering::Relaxed) {
                         break;
@@ -246,7 +250,7 @@ impl TaskSystem {
                         else {
                             continue;
                         };
-                        let inventory=service.start(json!({"action":"get_external_dependencies","skillId":skill["id"],"remoteCommit":commit}),Some("正在核对外部文件来源"),None,false,false,crate::dispatch);
+                        let inventory=service.start(json!({"action":"get_external_dependencies","skillId":skill["id"],"remoteCommit":commit,"automatic":true,"checkGeneration":generation}),Some("正在核对外部文件来源"),None,false,false,crate::dispatch);
                         let Ok(inventory) = inventory else {
                             continue;
                         };
@@ -258,7 +262,7 @@ impl TaskSystem {
                         if let Ok(report) = report {
                             let items:Vec<_>=report["items"].as_array().into_iter().flatten().filter(|item|!matches!(item["referenceKind"].as_str(),Some("command"|"skill_alias"))).map(|item|json!({"id":item["id"],"expectedFingerprint":item["referenceFingerprint"]})).collect();
                             if !items.is_empty() {
-                                let _=service.background(json!({"action":"batch_external_dependencies","operation":"auto_match","skillId":skill["id"],"remoteCommit":commit,"items":items}),"正在匹配外部文件来源",crate::dispatch);
+                                let _=service.background(json!({"action":"batch_external_dependencies","operation":"auto_match","skillId":skill["id"],"remoteCommit":commit,"items":items,"automatic":true,"checkGeneration":generation}),"正在匹配外部文件来源",crate::dispatch);
                             }
                         }
                     }
@@ -328,6 +332,31 @@ impl TaskSystem {
             .lock()
             .map_err(|_| "Manager state lock failed")?
             .snapshot())
+    }
+
+    /// A cheap scheduler view; do not serialize file inventories every tick.
+    pub(crate) fn check_configuration(&self) -> Result<Value, String> {
+        let manager=self.manager.lock().map_err(|_|"Manager state lock failed")?;
+        Ok(json!({"mode":manager.state.check_mode,"generation":manager.state.check_generation,"roots":manager.state.local_roots,"skills":manager.state.skills.iter().filter_map(|skill|Some(json!({"id":skill["id"],"localPath":skill["localPath"].as_str()?}))).collect::<Vec<_>>()}))
+    }
+
+    pub(crate) fn automatic_check(self:&Arc<Self>,request:Value)->Result<(),String>{
+        let task=self.start(request,Some("正在检查变化"),None,false,false,crate::dispatch)?;
+        let id=task["id"].as_str().ok_or("Invalid task ID")?.to_owned();
+        let service=self.clone();
+        std::thread::spawn(move||{
+            let changed=service.wait(&id).is_ok_and(|value|value["checkSummary"]["changed"]==true);
+            service.release_compat(&id);
+            if changed {let _=service.match_external_background(None);}
+        });
+        Ok(())
+    }
+
+    pub(crate) fn cancel_automatic(&self){
+        if let Ok(mut jobs)=self.jobs.lock(){for job in jobs.values_mut().filter(|job|job.automatic&&!job.task.terminal()){
+            job.cancel.store(true,Ordering::Relaxed);job.task.cancel_requested=true;
+        }}
+        self.wake.notify_all();
     }
 
     pub(crate) fn control(
@@ -471,6 +500,7 @@ impl TaskSystem {
                     recorded: visible,
                     consumers: usize::from(!visible),
                     dedup,
+                    automatic: request["automatic"] == true,
                 },
             );
         }
@@ -542,6 +572,9 @@ impl TaskSystem {
                     });
                     (manager.detached(hook.clone()), hook)
                 };
+                if request["automatic"] == true {
+                    validate_automatic_configuration(&worker.state,&request)?;
+                }
                 let progress_service = Arc::downgrade(&self);
                 let progress_id = id.clone();
                 let result = with_progress(
@@ -594,6 +627,12 @@ impl TaskSystem {
             let Some(job) = jobs.get_mut(id) else {
                 return;
             };
+            // Only useful automatic results enter operation history. Empty
+            // polling rounds remain transient and cannot evict user actions.
+            if job.automatic && !cancelled {
+                let meaningful=match &outcome {Ok(value)=>value["checkSummary"]["changed"]==true,Err(error)=>!error.contains("自动检查设置已改变")};
+                if meaningful {job.visible=true;job.recorded=true;}
+            }
             job.task.finished_at = Some(now());
             job.task.cancellable = false;
             match &outcome {
@@ -962,13 +1001,11 @@ impl ManagerRuntime for WorkerHook {
             .manager
             .lock()
             .map_err(|_| "Manager state lock failed")?;
+        if self.request["automatic"] == true {
+            validate_automatic_configuration(&manager.state,&self.request)?;
+        }
         let merged = merge_state(&base.state, &worker.state, &manager.state, &self.action)?;
-        if matches!(self.action.as_str(), "get_files" | "get_export_plan")
-            && merged.skills == manager.state.skills
-            && merged.sources == manager.state.sources
-            && merged.connections == manager.state.connections
-            && merged.settings == manager.state.settings
-        {
+        if merged == manager.state {
             base.state = worker.state.clone();
             return Ok(());
         }
@@ -988,10 +1025,17 @@ impl ManagerRuntime for WorkerHook {
     }
 }
 
+fn validate_automatic_configuration(state:&State,request:&Value)->Result<(),String>{
+    if state.check_mode!="auto" || request["checkGeneration"].as_u64()!=Some(state.check_generation){
+        return Err("自动检查设置已改变，本次旧检查已停止".into());
+    }
+    Ok(())
+}
+
 fn validate_observations(before: &State, after: &State, action: &str) -> Result<(), String> {
     if !matches!(
         action,
-        "refresh" | "audit_skills" | "auto_associate" | "get_files" | "get_export_plan"
+        "refresh" | "audit_skills" | "check_now" | "auto_associate" | "get_files" | "get_export_plan"
     ) {
         return Ok(());
     }
@@ -1125,6 +1169,19 @@ fn merge_state(
         "设置",
         &["ignoredClientConnections"],
     )?;
+    merged.local_roots=merge_records(&before.local_roots,&after.local_roots,&current.local_roots,"本地目录",action)?;
+    if before.ignored_local_paths!=after.ignored_local_paths {
+        merged.ignored_local_paths.retain(|path|!before.ignored_local_paths.contains(path)||after.ignored_local_paths.contains(path));
+        for path in after.ignored_local_paths.iter().filter(|path|!before.ignored_local_paths.contains(path)) {
+            if !merged.ignored_local_paths.contains(path){merged.ignored_local_paths.push(path.clone());}
+        }
+    }
+    if before.check_mode!=after.check_mode {
+        if current.check_mode!=before.check_mode&&current.check_mode!=after.check_mode{return Err("检查模式已改变，请重试".into());}
+        merged.check_mode=after.check_mode.clone();
+    }
+    if before.check_generation!=after.check_generation {merged.check_generation=current.check_generation+1;}
+    if before.check_summary!=after.check_summary {merged.check_summary=after.check_summary.clone();}
     if before.settings.get("ignoredClientConnections")
         != after.settings.get("ignoredClientConnections")
     {
@@ -1195,7 +1252,7 @@ fn merge_records(
                 let protected = if kind == "Skill"
                     && matches!(
                         action,
-                        "refresh" | "audit_skills" | "auto_associate" | "add_github"
+                        "refresh" | "audit_skills" | "check_now" | "auto_associate" | "add_github"
                     ) {
                     &["categoryId", "favorite", "externalBindings"][..]
                 } else {
@@ -1318,6 +1375,11 @@ fn rebase_result(value: &mut Value, current: &Value) {
             "sources",
             "connections",
             "settings",
+            "localRoots",
+            "ignoredLocalPaths",
+            "checkMode",
+            "checkGeneration",
+            "checkSummary",
             "dataDir",
             "storage",
             "managementUndo",
@@ -1339,6 +1401,7 @@ fn read_task(action: &str) -> bool {
         || matches!(
             action,
             "refresh"
+                | "check_now"
                 | "audit_skills"
                 | "refresh_clients"
                 | "get_document"
@@ -1409,6 +1472,10 @@ fn resources_for(manager: &Manager, request: &Value) -> Result<Vec<Resource>, St
     if action == "set_settings" {
         add("settings:display".into(), true);
     }
+    if matches!(action,"set_check_mode"|"add_local_roots"|"update_local_root"|"remove_local_roots"|"restore_local_ignores"|"forget") {
+        add("settings:checking".into(),true);
+    }
+    if action=="check_now" {add("sources:discovery".into(),true);}
     if action == "set_network_settings" {
         add("settings:network".into(), true);
     }
@@ -1439,10 +1506,10 @@ fn resources_for(manager: &Manager, request: &Value) -> Result<Vec<Resource>, St
             }
         }
     }
-    if matches!(action, "add_github" | "auto_associate") {
+    if matches!(action, "add_github" | "auto_associate" | "add_local" | "add_local_roots") {
         add("sources:discovery".into(), true);
     }
-    let selected: Vec<_> = if matches!(action, "refresh" | "audit_skills") {
+    let selected: Vec<_> = if matches!(action, "refresh" | "audit_skills" | "check_now") {
         let ids = manager.refresh_selection(request)?;
         manager
             .state
@@ -1655,7 +1722,7 @@ fn dedup_key(request: &Value) -> Option<String> {
         ids.dedup();
         return Some(json!([action, ids]).to_string());
     }
-    if !matches!(action, "refresh" | "audit_skills" | "refresh_clients") {
+    if !matches!(action, "refresh" | "audit_skills" | "refresh_clients" | "check_now") {
         return None;
     }
     let mut ids = request["skillIds"].as_array().cloned().unwrap_or_default();
@@ -1664,7 +1731,7 @@ fn dedup_key(request: &Value) -> Option<String> {
     }
     ids.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
     ids.dedup();
-    Some(json!([action, request["localOnly"] == true, ids]).to_string())
+    Some(json!([action, request["localOnly"] == true,request["remoteOnly"]==true,request["automatic"]==true,request["checkGeneration"],request["rootIds"],request["changedPaths"],ids]).to_string())
 }
 fn auto_match_dedup(manager: &Manager, request: &Value) -> Option<String> {
     if request["action"] != "batch_external_dependencies" || request["operation"] != "auto_match" {
@@ -1735,6 +1802,38 @@ fn result_progress(value: &Value) -> Value {
 mod tests {
     use super::*;
     use std::{sync::OnceLock, time::Instant};
+
+    #[test]
+    fn manual_mode_invalidates_inflight_automatic_results_without_touching_user_work(){
+        let (_dir,service)=fixture();let (hold_id,latch)=new_latch();
+        let task=service.start(json!({"action":"check_now","automatic":true,"checkGeneration":0,"skillIds":["one"],"skillIdForTest":"one","hold":hold_id,"fields":{"status":"synced"},"skillId":"one"}),None,None,false,false,fake_dispatch);
+        // A check may select one ID or a list, never both.
+        assert!(task.is_err());
+        let task=service.start(json!({"action":"check_now","automatic":true,"checkGeneration":0,"skillId":"one","hold":hold_id,"fields":{"status":"synced"}}),None,None,false,false,fake_dispatch).unwrap();
+        entered(&latch);
+        service.execute(json!({"action":"set_check_mode","mode":"manual"}),crate::dispatch).unwrap();
+        release(&latch);assert!(service.wait(task["id"].as_str().unwrap()).is_err());
+        assert_eq!(service.snapshot().unwrap()["skills"][0]["status"],"local_only");
+        assert_eq!(service.snapshot().unwrap()["checkMode"],"manual");
+    }
+
+    #[test]
+    fn automatic_noop_has_no_revision_event_or_history_write(){
+        fn noop(manager:&mut Manager,_:&Value)->Result<Value,String>{manager.save()?;let mut snapshot=manager.snapshot();snapshot["checkSummary"]=json!({"changed":false});Ok(snapshot)}
+        let (_dir,service)=fixture();let revision=service.snapshot().unwrap()["stateRevision"].clone();
+        let task=service.start(json!({"action":"check_now","automatic":true,"checkGeneration":0}),None,None,false,false,noop).unwrap();
+        service.wait(task["id"].as_str().unwrap()).unwrap();
+        assert_eq!(service.snapshot().unwrap()["stateRevision"],revision);assert!(service.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn source_records_merge_by_id_and_config_edits_advance_live_generation(){
+        let (_dir,service)=fixture();let before=service.manager.lock().unwrap().state.clone();let mut after=before.clone();let mut live=before.clone();
+        after.local_roots.push(json!({"id":"a","path":"a","enabled":true}));after.check_generation+=1;
+        live.local_roots.push(json!({"id":"b","path":"b","enabled":true}));live.check_generation+=1;
+        let merged=merge_state(&before,&after,&live,"add_local_roots").unwrap();assert_eq!(merged.local_roots.len(),2);assert_eq!(merged.check_generation,2);
+        assert!(validate_automatic_configuration(&merged,&json!({"checkGeneration":1})).is_err());
+    }
 
     #[test]
     fn durable_metadata_events_use_live_revision_and_workspace_uses_same_database() {

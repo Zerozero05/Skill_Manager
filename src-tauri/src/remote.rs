@@ -967,6 +967,14 @@ fn protected_record(skill: &Value) -> bool {
 }
 
 fn auto_associate_with(m: &mut Manager, snapshots: &BTreeMap<String, Snapshot>) {
+    auto_associate_selected(m, snapshots, &None);
+}
+
+fn auto_associate_selected(
+    m: &mut Manager,
+    snapshots: &BTreeMap<String, Snapshot>,
+    selected: &Option<BTreeSet<String>>,
+) {
     let records = m.state.skills.clone();
     let mut local_identities = Vec::new();
     let mut remote_identities = Vec::new();
@@ -979,12 +987,11 @@ fn auto_associate_with(m: &mut Manager, snapshots: &BTreeMap<String, Snapshot>) 
         if skill["localPath"].as_str().is_some() {
             let result = (|| -> Result<(String, String, bool), String> {
                 let root = local_root(skill)?;
-                let draft = local::draft(&root)?;
                 let bytes = read_local(&root, "SKILL.md")?;
                 Ok((
                     association::internal_name(&bytes)?,
                     hash(&bytes),
-                    !protected_record(&draft) && !protected_record(skill),
+                    local::readonly_reason(&root).is_none() && !protected_record(skill),
                 ))
             })();
             let (name, verified, eligible) = match result {
@@ -993,7 +1000,10 @@ fn auto_associate_with(m: &mut Manager, snapshots: &BTreeMap<String, Snapshot>) 
                     (
                         name,
                         true,
-                        allowed && skill["sourceId"].is_null() && skill["baselineCommit"].is_null(),
+                        allowed
+                            && refresh_matches(selected, skill)
+                            && skill["sourceId"].is_null()
+                            && skill["baselineCommit"].is_null(),
                     )
                 }
                 Err(_) => (
@@ -1063,7 +1073,11 @@ fn auto_associate_with(m: &mut Manager, snapshots: &BTreeMap<String, Snapshot>) 
                 .state
                 .skills
                 .iter_mut()
-                .find(|s| s["id"] == identity.id && s["sourceId"].is_null())
+                .find(|s| {
+                    s["id"] == identity.id
+                        && s["sourceId"].is_null()
+                        && refresh_matches(selected, s)
+                })
             {
                 local["associationNote"] = json!(if !identity.eligible {
                     "本地项目受托管保护、身份未核实或已有来源，保留独立记录"
@@ -1145,6 +1159,20 @@ fn auto_associate(m: &mut Manager) -> Result<Value, String> {
             match loaded {
                 Ok(snap) => {
                     update_source(m, &snap, &source["id"]);
+                    let mut discovered_source = source.clone();
+                    discovered_source["commit"] = json!(snap.commit);
+                    discovered_source["lastChecked"] = json!(now());
+                    discovered_source["private"] = json!(snap.private);
+                    if discovered_source.get("roots").is_none() {
+                        discovered_source["roots"] = json!(source_roots(&source, &m.state.skills)?);
+                    }
+                    let catalog = snap.catalog()?;
+                    reconcile_discovery(
+                        &mut m.state.skills,
+                        &discovered_source,
+                        &snap.tree,
+                        &catalog_items(catalog.as_ref()),
+                    )?;
                     if let Some(id) = source["id"].as_str() {
                         snapshots.insert(id.to_owned(), snap);
                     }
@@ -1177,13 +1205,17 @@ fn refresh(m: &mut Manager, req: &Value) -> Result<Value, String> {
     }
     let selected = m.refresh_selection(req)?;
     let previous = m.state.clone();
+    let automatic = req["automatic"] == true;
+    let remote_only = req["remoteOnly"] == true;
     let mut snapshots = BTreeMap::new();
     // Local declarations remain readable even when the remote request later fails.
     for skill in m
         .state
         .skills
         .iter_mut()
-        .filter(|s| s["localPath"].as_str().is_some() && refresh_matches(&selected, s))
+        .filter(|s| {
+            !remote_only && s["localPath"].as_str().is_some() && refresh_matches(&selected, s)
+        })
     {
         refresh_declared_local_version(skill);
         match current_hashes(skill) {
@@ -1198,12 +1230,19 @@ fn refresh(m: &mut Manager, req: &Value) -> Result<Value, String> {
             }
         }
     }
+    let selected_unlinked = m.state.skills.iter().any(|skill| {
+        refresh_matches(&selected, skill)
+            && skill["localPath"].is_string()
+            && skill["sourceId"].is_null()
+            && !protected_record(skill)
+    });
     let ids: Vec<Value> = m
         .state
         .sources
         .iter()
         .filter(|s| {
             selected.is_none()
+                || selected_unlinked
                 || m.state
                     .skills
                     .iter()
@@ -1220,8 +1259,30 @@ fn refresh(m: &mut Manager, req: &Value) -> Result<Value, String> {
             .find(|s| s["id"] == id)
             .cloned()
             .ok_or("Missing source")?;
-        match Snapshot::load(text(&source, "repo")?, source["branch"].as_str()) {
-            Ok(snap) => {
+        let fingerprint = check_fingerprint(&source, &m.state.skills)?;
+        let loaded = if automatic {
+            Snapshot::probe(
+                text(&source, "repo")?,
+                source["branch"].as_str(),
+                source["commit"].as_str(),
+                remote_only
+                    && source["error"].is_null()
+                    && source["checkFingerprint"] == fingerprint
+                    && m.state
+                        .skills
+                        .iter()
+                        .filter(|skill| skill["sourceId"] == id)
+                        .all(|skill| {
+                            skill["commit"] == source["commit"]
+                                && skill["remoteCheckRequired"] != true
+                        }),
+            )
+        } else {
+            Snapshot::load(text(&source, "repo")?, source["branch"].as_str()).map(Some)
+        };
+        match loaded {
+            Ok(None) => continue,
+            Ok(Some(snap)) => {
                 update_source(m, &snap, &id);
                 let mut refreshed_source = m
                     .state
@@ -1235,9 +1296,6 @@ fn refresh(m: &mut Manager, req: &Value) -> Result<Value, String> {
                     Err(error) => (vec![], Some(error)),
                 };
                 let discovery = (|| -> Result<(), String> {
-                    if selected.is_some() {
-                        return Ok(());
-                    }
                     if refreshed_source.get("roots").is_none() {
                         refreshed_source["roots"] =
                             json!(source_roots(&refreshed_source, &m.state.skills)?);
@@ -1307,7 +1365,9 @@ fn refresh(m: &mut Manager, req: &Value) -> Result<Value, String> {
         .state
         .skills
         .iter_mut()
-        .filter(|s| s["sourceId"].is_null() && refresh_matches(&selected, s))
+        .filter(|s| {
+            !remote_only && s["sourceId"].is_null() && refresh_matches(&selected, s)
+        })
     {
         skill["lastChecked"] = json!(now());
         match current_hashes(skill) {
@@ -1323,10 +1383,167 @@ fn refresh(m: &mut Manager, req: &Value) -> Result<Value, String> {
             Err(e) => skill["error"] = json!(e),
         }
     }
-    if selected.is_none() {
-        auto_associate_with(m, &snapshots);
+    auto_associate_selected(m, &snapshots, &selected);
+    if selected.is_some() {
+        preserve_unselected(&mut m.state.skills, &previous.skills, &selected);
+    }
+    for source in &mut m.state.sources {
+        if snapshots.contains_key(source["id"].as_str().unwrap_or("")) && source["error"].is_null() {
+            let already_discovered = previous
+                .sources
+                .iter()
+                .find(|old| old["id"] == source["id"])
+                .is_some_and(|old| {
+                    old["commit"] == source["commit"]
+                        && check_fingerprint(old, &previous.skills)
+                            .is_ok_and(|stamp| old["checkFingerprint"] == stamp)
+                });
+            source["checkFingerprint"] = if selected.is_none() || already_discovered {
+                json!(check_fingerprint(source, &m.state.skills)?)
+            } else {
+                // Selected checks intentionally omit unrelated discoveries and
+                // preserve their records; the next automatic full check must
+                // still reconcile the rest of this source at the same commit.
+                Value::Null
+            };
+        }
+    }
+    if automatic && semantic_state(&m.state)? == semantic_state(&previous)? {
+        m.state = previous;
+        return Ok(m.snapshot());
     }
     save_association_state(m, previous)
+}
+
+fn check_fingerprint(source: &Value, skills: &[Value]) -> Result<String, String> {
+    let candidates: Vec<_> = skills
+        .iter()
+        .filter(|skill| skill["sourceId"].is_null() && skill["localPath"].is_string())
+        .map(|skill| json!({"id":skill["id"],"path":skill["localPath"],"entry":skill["localHashes"]["SKILL.md"],"protected":protected_record(skill)}))
+        .collect();
+    Ok(hash(
+        &serde_json::to_vec(&json!({
+            "roots":source_roots(source, skills)?,"ignored":ignored_paths(source)?,
+            "repo":source["repo"],"branch":source["branch"],"candidates":candidates
+        }))
+        .map_err(|e| e.to_string())?,
+    ))
+}
+
+/// Candidate discovery checks the complete source to reject ambiguous names;
+/// a selected check commits only its chosen records. A merged remote placeholder
+/// is consumed only when its selected local identity now carries that association.
+fn preserve_unselected(
+    skills: &mut Vec<Value>,
+    before: &[Value],
+    selected: &Option<BTreeSet<String>>,
+) {
+    let checked: Vec<_> = skills
+        .iter()
+        .filter(|s| refresh_matches(selected, s))
+        .cloned()
+        .collect();
+    *skills = before
+        .iter()
+        .filter_map(|old| {
+            if refresh_matches(selected, old) {
+                return checked.iter().find(|s| s["id"] == old["id"]).cloned();
+            }
+            let consumed = old["localPath"].is_null()
+                && checked.iter().any(|current| {
+                    current["localPath"].is_string()
+                        && !current["sourceId"].is_null()
+                        && current["sourceId"] == old["sourceId"]
+                        && current["remotePath"] == old["remotePath"]
+                });
+            (!consumed).then(|| old.clone())
+        })
+        .collect();
+}
+
+fn semantic_state(state: &crate::model::State) -> Result<Value, String> {
+    fn strip(value: &mut Value) {
+        match value {
+            Value::Object(map) => {
+                for key in [
+                    "lastChecked",
+                    "lastLocalChecked",
+                    "lastLocalCheckedAt",
+                    "lastRemoteCheckedAt",
+                    "checkedAt",
+                    "baselineVerifiedAt",
+                    "associationBaselineVerifiedAt",
+                    "comparisonObservedAt",
+                ] {
+                    map.remove(key);
+                }
+                for item in map.values_mut() {
+                    strip(item);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    strip(item);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut value = serde_json::to_value(state).map_err(|e| e.to_string())?;
+    strip(&mut value);
+    Ok(value)
+}
+
+pub(crate) fn check(m: &mut Manager, req: &Value) -> Result<Value, String> {
+    let before = m.state.skills.clone();
+    let mut result = refresh(m, req)?;
+    let associated = m
+        .state
+        .skills
+        .iter()
+        .filter(|skill| {
+            !skill["sourceId"].is_null()
+                && skill["localPath"].is_string()
+                && before
+                    .iter()
+                    .any(|old| old["id"] == skill["id"] && old["sourceId"].is_null())
+        })
+        .count();
+    let new_remote = m
+        .state
+        .skills
+        .iter()
+        .filter(|skill| {
+            skill["localPath"].is_null() && !before.iter().any(|old| old["id"] == skill["id"])
+        })
+        .count();
+    let errors = m
+        .state
+        .skills
+        .iter()
+        .filter(|skill| !skill["error"].is_null())
+        .count();
+    let attention = m
+        .state
+        .skills
+        .iter()
+        .filter(|skill| {
+            !skill["error"].is_null()
+                || matches!(
+                    skill["status"].as_str(),
+                    Some(
+                        "remote_updated"
+                            | "local_modified"
+                            | "both_modified"
+                            | "unknown_baseline"
+                            | "docs_updated"
+                    )
+                )
+                || skill["runtimeAudit"]["status"] == "needs_review"
+        })
+        .count();
+    result["checkSummary"] = json!({"newRemote":new_remote,"associated":associated,"needsAttention":attention,"errors":errors});
+    Ok(result)
 }
 fn refresh_matches(selected: &Option<BTreeSet<String>>, skill: &Value) -> bool {
     selected
@@ -1876,7 +2093,7 @@ fn preview_push(m: &mut Manager, req: &Value) -> Result<Value, String> {
     }
     let mut warnings:Vec<String>=vec!["Only the selected files are changed. Omitted remote README and management files remain untouched.".into()];
     if req["trimOptional"] != false {
-        if let Err(error) = local::minimal_runtime_files(&root) {
+        if let Err(error) = local::minimal_runtime_for_skill(&skill, &root, &expected) {
             warnings.push(format!(
                 "本次可上传所选变化；运行依赖尚待核对，上传后保留全部本地文件：{error}"
             ));

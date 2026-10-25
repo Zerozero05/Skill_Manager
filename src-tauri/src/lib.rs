@@ -4,6 +4,8 @@ mod clients;
 mod export_plan;
 mod external;
 mod local;
+mod local_roots;
+mod checks;
 mod model;
 mod network;
 mod remote;
@@ -29,6 +31,9 @@ fn folder_for_skill(m: &Manager, request: &Value) -> Result<PathBuf, String> {
 }
 
 fn dispatch(m: &mut Manager, request: &Value) -> Result<Value, String> {
+    if let Some(value) = local_roots::handle(m, request)? {
+        return Ok(value);
+    }
     match request["action"].as_str().ok_or("Missing action")? {
         "get_state" => {
             return Ok(m.snapshot());
