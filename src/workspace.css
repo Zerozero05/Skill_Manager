@@ -1,6 +1,6 @@
 .workspace-shell{display:flex;flex-direction:column;min-width:0;min-height:0;height:100%;background:var(--page);color:var(--text)}
 .workspace-bar{display:flex;align-items:stretch;gap:6px;border-bottom:1px solid var(--line);background:var(--surface-soft);min-height:43px;flex:0 0 auto;position:relative;z-index:4}
-.workspace-tabs{display:flex;align-items:stretch;gap:3px;min-width:0;flex:1;overflow-x:scroll;overflow-y:hidden;padding:5px 6px 0;scrollbar-width:thin;overscroll-behavior-x:contain}
+.workspace-tabs{display:flex;align-items:stretch;gap:3px;min-width:0;flex:1;overflow-x:auto;overflow-y:hidden;padding:5px 6px 0;scrollbar-width:thin;overscroll-behavior-x:contain}
 .workspace-tab{display:flex;align-items:stretch;position:relative;max-width:260px;min-width:105px;flex:0 0 auto;border:1px solid transparent;border-bottom:0;border-radius:7px 7px 0 0;background:transparent;color:var(--muted)}
 .workspace-tab.is-active{background:var(--surface);border-color:var(--line);color:var(--text);box-shadow:inset 0 2px var(--accent)}
 .workspace-tab:hover{background:var(--hover);color:var(--text-secondary)}

@@ -5,24 +5,59 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: windows-checks-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ startsWith(github.head_ref || github.ref_name, 'fix/') }}
 jobs:
   check:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
+      - name: Candidate version configuration
+        run: ./scripts/package-candidate.ps1 -CheckConfiguration
       - name: Install package manager
-        run: npm install --global pnpm@11.25.0
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build
-      - run: pnpm test:ui
+        run: |
+          New-Item -ItemType Directory -Path check-logs | Out-Null
+          npm install --global pnpm@11.25.0 2>&1 | Tee-Object -FilePath check-logs/package-manager.log -Encoding utf8NoBOM
+          if ($LASTEXITCODE -ne 0) { throw 'Package manager installation failed' }
+      - name: Install locked dependencies
+        run: |
+          pnpm install --frozen-lockfile 2>&1 | Tee-Object -FilePath check-logs/dependencies.log -Encoding utf8NoBOM
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
+      - name: Frontend build
+        run: |
+          pnpm build 2>&1 | Tee-Object -FilePath check-logs/frontend-build.log -Encoding utf8NoBOM
+          if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed' }
+      - name: Frontend tests
+        run: |
+          pnpm test:ui 2>&1 | Tee-Object -FilePath check-logs/frontend-tests.log -Encoding utf8NoBOM
+          if ($LASTEXITCODE -ne 0) { throw 'Frontend tests failed' }
       - name: Rust checks
         working-directory: src-tauri
         run: |
-          rustup update stable --no-self-update
-          cargo fmt --check
-          cargo test --locked
-          cargo clippy --locked --all-targets -- -D warnings
-          cargo build --locked --release --features custom-protocol
+          rustup update stable --no-self-update 2>&1 | Tee-Object -FilePath ../check-logs/rust-toolchain.log -Encoding utf8NoBOM
+          if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain preparation failed' }
+          cargo fmt --check 2>&1 | Tee-Object -FilePath ../check-logs/rust-format.log -Encoding utf8NoBOM
+          if ($LASTEXITCODE -ne 0) { throw 'Rust formatting check failed' }
+          cargo test --locked 2>&1 | Tee-Object -FilePath ../check-logs/rust-tests.log -Encoding utf8NoBOM
+          if ($LASTEXITCODE -ne 0) { throw 'Rust tests failed' }
+          cargo clippy --locked --all-targets -- -D warnings 2>&1 | Tee-Object -FilePath ../check-logs/rust-clippy.log -Encoding utf8NoBOM
+          if ($LASTEXITCODE -ne 0) { throw 'Rust Clippy check failed' }
+          cargo build --locked --release --features custom-protocol 2>&1 | Tee-Object -FilePath ../check-logs/windows-release-build.log -Encoding utf8NoBOM
+          if ($LASTEXITCODE -ne 0) { throw 'Windows release build failed' }
+      - name: Package Windows candidate
+        id: candidate
+        run: ./scripts/package-candidate.ps1
+      - name: Upload Windows candidate
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
+        with:
+          name: Skill_Manager_v${{ steps.candidate.outputs.version }}_windows_x64_candidate_${{ github.sha }}
+          path: outputs/ci-candidate/
+          if-no-files-found: error
+          retention-days: 7

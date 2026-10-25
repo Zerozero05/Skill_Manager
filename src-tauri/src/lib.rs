@@ -752,6 +752,19 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                use tauri::Manager;
+                let prevent = window
+                    .app_handle()
+                    .try_state::<Arc<workspace::WorkspaceSystem>>()
+                    .is_some_and(|workspace| {
+                        workspace.native_close_requested(window.app_handle(), window.label())
+                    });
+                // The approved handshake uses destroy(), which does not re-enter this gate.
+                if prevent {
+                    api.prevent_close();
+                }
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 use tauri::Manager;
                 if let Some(workspace) = window

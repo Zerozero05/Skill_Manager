@@ -1,4 +1,6 @@
-export type ReadFailure = 'auth' | 'source' | 'network' | 'other';
+import { isBridgeFailure } from './bridge-recovery.ts';
+
+export type ReadFailure = 'auth' | 'source' | 'network' | 'bridge' | 'other';
 
 export function readRequestKey(cacheKey: string, refreshRevision: number) {
   return JSON.stringify([cacheKey, refreshRevision]);
@@ -12,7 +14,7 @@ export function inventoryReadKey(skillId: string, generation: number | null | un
 /** Bounded display data only. This cache never supplies mutation or export proofs. */
 export class BoundedReadCache<T> {
   private entries = new Map<string, { value: T; bytes: number; checkedAt: number }>();
-  private pending = new Map<string, Promise<T>>();
+  private pending = new Map<string, { promise: Promise<T>; owners: Set<() => boolean> }>();
   private bytes = 0;
   private maxEntries: number;
   private maxBytes: number;
@@ -48,17 +50,19 @@ export class BoundedReadCache<T> {
     while (this.entries.size > this.maxEntries || this.bytes > this.maxBytes) this.delete(this.entries.keys().next().value!);
     return true;
   }
-  load(key: string, read: () => Promise<T>, force = false): Promise<T> {
+  load(key: string, read: (active: () => boolean) => Promise<T>, force = false, owner: () => boolean = () => true): Promise<T> {
     const current = this.pending.get(key);
-    if (current && !force) return current;
-    const request = Promise.resolve().then(read).then(value => {
-      if (this.pending.get(key) === request) this.set(key, value);
+    if (current && !force) { current.owners.add(owner); return current.promise; }
+    const owners = new Set([owner]);
+    const active = () => [...owners].some(owns => owns());
+    const request = Promise.resolve().then(() => read(active)).then(value => {
+      if (this.pending.get(key)?.promise === request) this.set(key, value);
       return value;
     });
-    this.pending.set(key, request);
+    this.pending.set(key, { promise: request, owners });
     // Waiters keep their promise; only the shared coalescing index is bounded.
     while (this.pending.size > this.maxEntries) this.pending.delete(this.pending.keys().next().value!);
-    void request.finally(() => { if (this.pending.get(key) === request) this.pending.delete(key); }).catch(() => undefined);
+    void request.finally(() => { if (this.pending.get(key)?.promise === request) this.pending.delete(key); }).catch(() => undefined);
     return request;
   }
   get statistics() { return { entries: this.entries.size, bytes: this.bytes, pending: this.pending.size }; }
@@ -79,6 +83,7 @@ export function documentCacheKey(identity: DocumentCacheIdentity): string {
 }
 
 export function classifyReadFailure(cause: unknown): ReadFailure {
+  if (isBridgeFailure(cause)) return 'bridge';
   const text = cause instanceof Error ? cause.message : String(cause);
   if (/\b(?:401|403)\b|authentication|unauthori[sz]ed|forbidden|凭据|身份验证|权限不足|无权访问/i.test(text)) return 'auth';
   if (/\b404\b|not found|no longer exists|来源已变化|不存在|已移除|不是.*文档|not UTF-8|invalid.*(?:path|source|document)/i.test(text)) return 'source';
