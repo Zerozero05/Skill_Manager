@@ -714,7 +714,10 @@ mod tests {
                 )
                 .unwrap();
             }
-            skill(&root.join("created-after-selection"), "created-after-selection");
+            skill(
+                &root.join("created-after-selection"),
+                "created-after-selection",
+            );
             let mut request = json!({"action":"check_now"});
             if automatic {
                 request["automatic"] = json!(true);
