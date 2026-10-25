@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { acknowledgeCloseRound, BRIDGE_RETRY_DELAYS, bridgeMessage, isBridgeFailure, pendingCloseRound, RecoverableSubscription, retryBridgeRead, selectionWriteConfirmed, shouldPeekSelection, shouldPollWorkspace } from '../src/bridge-recovery.ts';
+import { acknowledgeCloseRound, BRIDGE_RETRY_DELAYS, bridgeMessage, isBridgeFailure, pendingCloseRound, readCloseBounds, RecoverableSubscription, retryBridgeRead, selectionWriteConfirmed, shouldPeekSelection, shouldPollWorkspace } from '../src/bridge-recovery.ts';
 import { BoundedReadCache, classifyReadFailure } from '../src/read-cache.ts';
 
 const disconnected = () => new Error('runtime error: failed to send message to the webview');
@@ -148,4 +148,29 @@ test('hidden windows poll only degraded closing controls with working IPC', () =
   assert.equal(shouldPollWorkspace({ ...healthy, visible: false, degraded: true, closeDegraded: true }), true);
   assert.equal(shouldPollWorkspace({ ...healthy, visible: false, degraded: true, closeDegraded: true, ipcAvailable: false }), false);
   assert.equal(shouldPollWorkspace({ ...healthy, degraded: true, closeDegraded: true, alive: false }), false);
+});
+
+test('unavailable native bounds exhaust their read budget and omit replacement geometry', async () => {
+  let calls = 0;
+  const delays: number[] = [];
+  const bounds = await readCloseBounds(async () => { calls++; throw disconnected(); }, { wait: async ms => { delays.push(ms); } });
+  assert.equal(bounds, undefined); assert.equal(calls, 3); assert.deepEqual(delays, [...BRIDGE_RETRY_DELAYS]);
+});
+
+test('native bounds recover without swallowing other errors or an owner leaving', async () => {
+  const expected = { x: 10, y: 20, width: 1200, height: 800, maximized: false };
+  let calls = 0;
+  assert.deepEqual(await readCloseBounds(async () => { if (++calls === 1) throw disconnected(); return expected; }, { wait: async () => undefined }), expected);
+  await assert.rejects(readCloseBounds(async () => { throw new Error('window permission denied'); }), /permission denied/);
+  let active = true;
+  await assert.rejects(readCloseBounds(async () => { throw disconnected(); }, { active: () => active, wait: async () => { active = false; } }), /已停止/);
+});
+
+test('closing controls keep polling connected visible or hidden windows only for their close lifecycle', () => {
+  const state = { alive: true, visible: true, ipcAvailable: true, degraded: false, closeDegraded: false, closing: true };
+  assert.equal(shouldPollWorkspace(state), true);
+  assert.equal(shouldPollWorkspace({ ...state, visible: false }), true);
+  assert.equal(shouldPollWorkspace({ ...state, closing: false }), false);
+  assert.equal(shouldPollWorkspace({ ...state, ipcAvailable: false }), false);
+  assert.equal(shouldPollWorkspace({ ...state, alive: false }), false);
 });

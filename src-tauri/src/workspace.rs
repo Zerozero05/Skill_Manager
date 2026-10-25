@@ -998,6 +998,30 @@ impl WorkspaceSystem {
     fn wait_close_acknowledgements(&self, id: &str, round: &str) -> Result<Vec<String>, String> {
         self.wait_close_until(id, round, Duration::from_secs(30))
     }
+    fn begin_final_close(
+        &self,
+        id: &str,
+        mut notify: impl FnMut(&str) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let labels = {
+            let mut registry = self.registry.lock().map_err(|_| "Workspace lock failed")?;
+            let close = registry
+                .close
+                .as_mut()
+                .filter(|close| close.id == id)
+                .ok_or("关闭已取消，窗口已保留")?;
+            close.prepared = true;
+            close.round = "final".into();
+            close.acknowledgements.clear();
+            close.labels.iter().cloned().collect::<Vec<_>>()
+        };
+        // The final round is authoritative before notifications are sent.
+        // Broken event delivery leaves it pending for control-snapshot ACKs.
+        for target in labels {
+            let _ = notify(&target);
+        }
+        Ok(())
+    }
     fn wait_close_until(
         &self,
         id: &str,
@@ -1167,28 +1191,17 @@ impl WorkspaceSystem {
                 return Err("当前窗口不拥有此关闭请求".into());
             }
             let outcome = (|| -> Result<Vec<String>, String> {
-                let labels = self.wait_close_acknowledgements(&close_id, "initial")?;
+                self.wait_close_acknowledgements(&close_id, "initial")?;
                 self.service
                     .execute(json!({"action":"prepare_close"}), crate::dispatch)?;
-                {
-                    let mut registry = self.registry.lock().map_err(|_| "Workspace lock failed")?;
-                    let close = registry
-                        .close
-                        .as_mut()
-                        .filter(|close| close.id == close_id)
-                        .ok_or("关闭已取消，窗口已保留")?;
-                    close.prepared = true;
-                    close.round = "final".into();
-                    close.acknowledgements.clear();
-                }
-                for target in &labels {
+                self.begin_final_close(&close_id, |target| {
                     app.emit_to(
-                        target.as_str(),
+                        target,
                         "workspace-close-request",
                         json!({"closeId":close_id,"round":"final","preserveRuntime":request["storagePreviewId"].is_string()}),
                     )
-                    .map_err(|e| e.to_string())?;
-                }
+                    .map_err(|error| error.to_string())
+                })?;
                 self.wait_close_acknowledgements(&close_id, "final")
             })();
             let labels = match outcome {
@@ -2238,6 +2251,99 @@ mod tests {
         assert!(workspace
             .wait_close_until("close-1", "final", Duration::from_millis(1))
             .is_ok());
+    }
+    #[test]
+    fn failed_final_notifications_remain_readable_and_require_all_window_acks() {
+        let (_dir, workspace) = fixture();
+        {
+            let mut r = workspace.registry.lock().unwrap();
+            r.close = Some(CloseIntent {
+                id: "close-final-delivery".into(),
+                labels: BTreeSet::from(["main".into(), "workspace-child".into()]),
+                acknowledgements: BTreeSet::from(["main".into(), "workspace-child".into()]),
+                error: None,
+                prepared: false,
+                round: "initial".into(),
+            });
+        }
+        let mut attempted = Vec::new();
+        workspace
+            .begin_final_close("close-final-delivery", |target| {
+                attempted.push(target.to_owned());
+                Err("runtime error: failed to send message to the webview".into())
+            })
+            .unwrap();
+        assert_eq!(attempted, vec!["main", "workspace-child"]);
+        {
+            let r = workspace.registry.lock().unwrap();
+            for label in ["main", "workspace-child"] {
+                let control = r.payload(label);
+                assert_eq!(control["closeRequest"]["closeId"], "close-final-delivery");
+                assert_eq!(control["closeRequest"]["round"], "final");
+                assert_eq!(control["closing"], true);
+            }
+            assert!(r.close.as_ref().unwrap().prepared);
+            assert!(r.close.as_ref().unwrap().error.is_none());
+        }
+        assert!(workspace
+            .wait_close_until("close-final-delivery", "final", Duration::from_millis(1))
+            .is_err());
+        {
+            let mut r = workspace.registry.lock().unwrap();
+            r.close
+                .as_mut()
+                .unwrap()
+                .acknowledgements
+                .insert("main".into());
+        }
+        assert!(workspace
+            .wait_close_until("close-final-delivery", "final", Duration::from_millis(1))
+            .is_err());
+        {
+            let mut r = workspace.registry.lock().unwrap();
+            r.close
+                .as_mut()
+                .unwrap()
+                .acknowledgements
+                .insert("workspace-child".into());
+        }
+        assert_eq!(
+            workspace
+                .wait_close_until("close-final-delivery", "final", Duration::from_millis(1))
+                .unwrap(),
+            vec!["main", "workspace-child"]
+        );
+    }
+    #[test]
+    fn navigation_save_without_native_bounds_persists_panes_and_preserves_existing_geometry() {
+        let (dir, workspace) = fixture();
+        let previous_bounds =
+            json!({"x":40.0,"y":60.0,"width":1180.0,"height":820.0,"maximized":false});
+        {
+            let mut r = workspace.registry.lock().unwrap();
+            r.window_mut("main").unwrap().bounds = Some(previous_bounds.clone());
+            r.replace_window(
+                "main",
+                &json!({
+                    "panes":[home("main"),{"id":"detail-bounds","kind":"detail","skillId":"skill-one","state":{"section":"files","scrollTop":144}}],
+                    "activePaneId":"detail-bounds"
+                }),
+            )
+            .unwrap();
+            workspace.persist(&mut r).unwrap();
+            assert_eq!(
+                r.window("main").unwrap().bounds,
+                Some(previous_bounds.clone())
+            );
+        }
+        let db = rusqlite::Connection::open(dir.path().join("manager.sqlite3")).unwrap();
+        let stored: String = db
+            .query_row("SELECT payload FROM workspace_state", [], |row| row.get(0))
+            .unwrap();
+        let saved: Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(saved["windows"][0]["bounds"], previous_bounds);
+        assert_eq!(saved["windows"][0]["activePaneId"], "detail-bounds");
+        assert_eq!(saved["windows"][0]["panes"][1]["state"]["scrollTop"], 144.0);
     }
     #[test]
     fn simultaneous_window_close_reserves_the_first_and_last_still_prepares_global_tasks() {

@@ -25,6 +25,15 @@ export async function retryBridgeRead<T>(read: () => Promise<T>, options: ReadOp
   }
 }
 
+/** Bounds are optional metadata; a failed native bridge must not discard saved pane navigation. */
+export async function readCloseBounds<T>(read: () => Promise<T>, options: ReadOptions = {}): Promise<T | undefined> {
+  try { return await retryBridgeRead(read, options); }
+  catch (cause) {
+    if (!isBridgeFailure(cause) || options.active?.() === false) throw cause;
+    return undefined;
+  }
+}
+
 function release(stop: () => void) {
   try { void Promise.resolve(stop()).catch(() => undefined); } catch { /* The old WebView may already be gone. */ }
 }
@@ -74,8 +83,8 @@ export async function acknowledgeCloseRound(round: CloseRound, send: () => Promi
   }
 }
 
-export function shouldPollWorkspace(state: { alive: boolean; visible: boolean; ipcAvailable: boolean; degraded: boolean; closeDegraded: boolean }): boolean {
-  return state.alive && state.ipcAvailable && (state.visible ? state.degraded : state.closeDegraded);
+export function shouldPollWorkspace(state: { alive: boolean; visible: boolean; ipcAvailable: boolean; degraded: boolean; closeDegraded: boolean; closing?: boolean }): boolean {
+  return state.alive && state.ipcAvailable && (!!state.closing || (state.visible ? state.degraded : state.closeDegraded));
 }
 
 /** A lost acknowledgement is reconciled from state, never by replaying its write. */

@@ -9,7 +9,7 @@ import { createHomePane, localHistoryPane, reorderWorkspacePanes, type Workspace
 import { WorkspaceSessionContext, type PaneFocusNavigation, type SessionBridge, type SessionDraft } from './session';
 import './session.css';
 import { isStaleReadSnapshot } from './snapshot-clock';
-import { acknowledgeCloseRound, bridgeMessage, pendingCloseRound, RecoverableSubscription, retryBridgeRead, shouldPollWorkspace } from './bridge-recovery';
+import { acknowledgeCloseRound, bridgeMessage, pendingCloseRound, readCloseBounds, RecoverableSubscription, retryBridgeRead, shouldPollWorkspace } from './bridge-recovery';
 
 type Transfer = { id: string; paneId: string; sourceWindowLabel: string; targetWindowLabel: string };
 type CloseRequest = { closeId: string; round?: string; preserveRuntime?: boolean };
@@ -32,6 +32,7 @@ export default function WorkspaceApp() {
   const [error, setError] = useState('');
   const [closing, setClosing] = useState(false);
   const closingRef = useRef(false);
+  const updateClosePolling = useRef<() => void>(() => undefined);
   const [showHelp, setShowHelp] = useState(false);
   const ready = useRef(false);
   const mounted = useRef(true);
@@ -206,15 +207,21 @@ export default function WorkspaceApp() {
     // recreate its WebViews without losing the pages that were just closed.
     if (preserveRuntime) for (const [paneId, bridge] of bridges.current) await api('workspace_set_pane_runtime', { paneId, runtime: bridge.capture() });
     if (isTauri()) {
-      const window = getCurrentWindow(); const scale = await window.scaleFactor(); const position = await window.outerPosition(); const size = await window.innerSize();
+      const window = getCurrentWindow();
+      const bounds = await readCloseBounds(async () => {
+        const scale = await window.scaleFactor(), position = await window.outerPosition(), size = await window.innerSize();
+        return { x: position.x / scale, y: position.y / scale, width: size.width / scale, height: size.height / scale, maximized: await window.isMaximized() };
+      }, { active: () => mounted.current });
       const owner = current.current.windows.find(item => item.label === label);
-      if (owner) await api('workspace_save', { panes: owner.panes.map(pane => { const draft = bridges.current.get(pane.id)?.capture(); return draft ? { ...pane, state: { ...pane.state, scrollTop: draft.scrollTop, outlineExpanded: draft.outlineExpanded, expandedSections: draft.expandedSections } } : pane; }), activePaneId: owner.activePaneId, bounds: { x: position.x / scale, y: position.y / scale, width: size.width / scale, height: size.height / scale, maximized: await window.isMaximized() } });
+      // Omitting bounds preserves the backend's last known position; pane saves still must succeed.
+      if (owner) await api('workspace_save', { panes: owner.panes.map(pane => { const draft = bridges.current.get(pane.id)?.capture(); return draft ? { ...pane, state: { ...pane.state, scrollTop: draft.scrollTop, outlineExpanded: draft.outlineExpanded, expandedSections: draft.expandedSections } } : pane; }), activePaneId: owner.activePaneId, ...(bounds ? { bounds } : {}) });
     }
     return true;
   }, [label]);
   const closeWindow = useCallback(async (all = false, storagePreviewId?: string) => {
     if (closingRef.current) return false;
     closingRef.current = true; setClosing(true);
+    updateClosePolling.current();
     let ownedCloseId: string | undefined;
     try {
       if (!await flush(!!storagePreviewId)) throw new Error('界面设置未保存，窗口保持打开');
@@ -232,6 +239,7 @@ export default function WorkspaceApp() {
       if (ownedCloseId) await api('workspace_cancel_close', { closeId: ownedCloseId }).catch(() => undefined);
       else await api('workspace_cancel_close', { nativeOnly: true }).catch(() => undefined);
       closingRef.current = false; setClosing(false); setError(`窗口暂未关闭：${errorText(cause)}`);
+      updateClosePolling.current();
       return false;
     }
   }, [flush]);
@@ -256,6 +264,7 @@ export default function WorkspaceApp() {
       if (!active() || inFlightCloseRounds.has(key)) return;
       inFlightCloseRounds.add(key);
       observedBackendClose = true; closingRef.current = true; setClosing(true);
+      updatePolling();
       void (async () => {
         const peek = () => api<WorkspaceReply>('workspace_get');
         const currentClose = await retryBridgeRead(peek, { active });
@@ -279,6 +288,7 @@ export default function WorkspaceApp() {
       else if (reply.closing === false && observedBackendClose) {
         observedBackendClose = false; closingRef.current = false; setClosing(false);
       }
+      updatePolling();
     };
     const reconcile = (afterSubscription = false, controlOnly = false): Promise<void> => {
       if (!active()) return Promise.resolve();
@@ -286,7 +296,7 @@ export default function WorkspaceApp() {
       snapshot = (async () => {
         do {
           repeatSnapshot = false;
-          const lightweight = controlOnly || document.visibilityState === 'hidden';
+          const lightweight = controlOnly || closingRef.current || document.visibilityState === 'hidden';
           if (!lightweight && !closingRef.current) await refreshState();
           const reply = await retryBridgeRead(() => api<WorkspaceReply>('workspace_get'), { active });
           if (!active()) return;
@@ -298,13 +308,14 @@ export default function WorkspaceApp() {
       return snapshot;
     };
     const updatePolling = () => {
-      const canPoll = () => shouldPollWorkspace({ alive: active(), visible: document.visibilityState !== 'hidden', ipcAvailable, degraded: subscriptions.some(item => !item.connected), closeDegraded: [...closeSubscriptions].some(item => !item.connected) });
+      const canPoll = () => shouldPollWorkspace({ alive: active(), visible: document.visibilityState !== 'hidden', ipcAvailable, degraded: subscriptions.some(item => !item.connected), closeDegraded: [...closeSubscriptions].some(item => !item.connected), closing: closingRef.current });
       if (!canPoll()) { stopPolling(); return; }
       if (!poll) poll = setInterval(() => {
         if (!canPoll()) { stopPolling(); return; }
-        void reconcile(false, document.visibilityState === 'hidden').catch(report);
+        void reconcile(false, closingRef.current || document.visibilityState === 'hidden').catch(report);
       }, 2000);
     };
+    updateClosePolling.current = updatePolling;
     const add = (register: () => Promise<() => void>, closeControl = false) => {
       const subscription = new RecoverableSubscription(register, {
         active,
@@ -338,7 +349,7 @@ export default function WorkspaceApp() {
     };
     const visibilityChanged = () => { updatePolling(); if (document.visibilityState !== 'hidden') focus(); };
     window.addEventListener('focus', focus); document.addEventListener('visibilitychange', visibilityChanged);
-    return () => { disposed = true; mounted.current = false; stopPolling(); for (const item of subscriptions) item.dispose(); window.removeEventListener('focus', focus); document.removeEventListener('visibilitychange', visibilityChanged); };
+    return () => { disposed = true; mounted.current = false; stopPolling(); if (updateClosePolling.current === updatePolling) updateClosePolling.current = () => undefined; for (const item of subscriptions) item.dispose(); window.removeEventListener('focus', focus); document.removeEventListener('visibilitychange', visibilityChanged); };
   }, [acceptWorkspace, applyReply, closeWindow, flush, refreshState, label]);
   useEffect(() => {
     const stopEditing = (event: Event) => { if (closingRef.current) { event.preventDefault(); event.stopImmediatePropagation(); } };
