@@ -149,11 +149,14 @@ pub(crate) fn discover(manager: &mut Manager, request: &Value) -> Result<Discove
     let mut result = Discovery::default();
     let mut candidates = BTreeSet::new();
     for source in &manager.state.local_roots {
-        if source["enabled"] == false
-            || root_ids
-                .as_ref()
-                .is_some_and(|ids| !source["id"].as_str().is_some_and(|id| ids.contains(id)))
+        if root_ids
+            .as_ref()
+            .is_some_and(|ids| !source["id"].as_str().is_some_and(|id| ids.contains(id)))
         {
+            continue;
+        }
+        let manual_root_check = request["automatic"] != true && root_ids.is_some();
+        if source["enabled"] == false && !manual_root_check {
             continue;
         }
         let Some(path) = source["path"].as_str() else {
@@ -443,6 +446,7 @@ pub(crate) fn handle(manager: &mut Manager, request: &Value) -> Result<Option<Va
             }
         }
         "check_now" => {
+            manager.refresh_selection(request)?;
             if request["automatic"] == true
                 && (manager.state.check_mode != "auto"
                     || request["checkGeneration"].as_u64() != Some(manager.state.check_generation))
@@ -493,7 +497,10 @@ pub(crate) fn handle(manager: &mut Manager, request: &Value) -> Result<Option<Va
                 remote_request["skillIds"] = json!(selected);
                 remote_request["discoveryOnly"] = json!(true);
             }
-            if let Some(ids) = remote_request["skillIds"].as_array_mut() {
+            if let Some(ids) = remote_request
+                .get_mut("skillIds")
+                .and_then(Value::as_array_mut)
+            {
                 for id in &discovery.changed_ids {
                     if !ids.iter().any(|value| value == id) {
                         ids.push(json!(id));
@@ -686,5 +693,111 @@ mod tests {
         assert_eq!(discover(&mut manager, &json!({})).unwrap().imported, 0);
         skill(&folder, "new");
         assert_eq!(discover(&mut manager, &json!({})).unwrap().imported, 1);
+    }
+
+    #[test]
+    fn global_check_without_selection_registers_and_finishes_in_manual_and_automatic_modes() {
+        for automatic in [false, true] {
+            let fixture = fixture();
+            let root = fixture.path().join("skills");
+            fs::create_dir(&root).unwrap();
+            let mut manager = Manager::new(fixture.path().join("state")).unwrap();
+            crate::dispatch(
+                &mut manager,
+                &json!({"action":"add_local_roots","paths":[root]}),
+            )
+            .unwrap();
+            if !automatic {
+                crate::dispatch(
+                    &mut manager,
+                    &json!({"action":"set_check_mode","mode":"manual"}),
+                )
+                .unwrap();
+            }
+            skill(&root.join("created-after-selection"), "created-after-selection");
+            let mut request = json!({"action":"check_now"});
+            if automatic {
+                request["automatic"] = json!(true);
+                request["checkGeneration"] = json!(manager.state.check_generation);
+            }
+            assert!(request.get("skillIds").is_none());
+            let result = crate::dispatch(&mut manager, &request).unwrap();
+            assert_eq!(result["skills"].as_array().unwrap().len(), 1);
+            assert_eq!(result["checkSummary"]["newLocal"], 1);
+            assert!(manager.state.check_summary.is_object());
+            assert!(request.get("skillIds").is_none());
+
+            let id = manager.state.skills[0]["id"].clone();
+            let selected_request = json!({"action":"check_now","skillId":id});
+            let selected = crate::dispatch(&mut manager, &selected_request).unwrap();
+            assert_eq!(selected["skills"].as_array().unwrap().len(), 1);
+            // The scheduler's post-discovery full and periodic remote requests
+            // also omit skillIds. They must preserve that absent-field meaning.
+            for remote_only in [false, true] {
+                let request = json!({
+                    "action": "check_now",
+                    "automatic": automatic,
+                    "checkGeneration": manager.state.check_generation,
+                    "skipLocalDiscovery": true,
+                    "remoteOnly": remote_only
+                });
+                let result = crate::dispatch(&mut manager, &request).unwrap();
+                assert_eq!(result["skills"].as_array().unwrap().len(), 1);
+                assert!(result["checkSummary"].is_object());
+            }
+        }
+    }
+
+    #[test]
+    fn directory_checks_scope_discovery_and_support_empty_roots_without_selection_errors() {
+        let fixture = fixture();
+        let first = fixture.path().join("first");
+        let second = fixture.path().join("second");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        let mut manager = Manager::new(fixture.path().join("state")).unwrap();
+        crate::dispatch(
+            &mut manager,
+            &json!({"action":"add_local_roots","paths":[first,second]}),
+        )
+        .unwrap();
+        let first_id = manager.state.local_roots[0]["id"].clone();
+        let second_id = manager.state.local_roots[1]["id"].clone();
+        let empty = crate::dispatch(
+            &mut manager,
+            &json!({"action":"check_now","rootIds":[first_id]}),
+        )
+        .unwrap();
+        assert!(empty["skills"].as_array().unwrap().is_empty());
+        skill(&first.join("one"), "one");
+        crate::dispatch(
+            &mut manager,
+            &json!({"action":"update_local_root","rootId":first_id,"enabled":false}),
+        )
+        .unwrap();
+        let automatic = json!({"automatic":true,"rootIds":[first_id]});
+        assert_eq!(discover(&mut manager, &automatic).unwrap().imported, 0);
+        assert_eq!(discover(&mut manager, &json!({})).unwrap().imported, 0);
+        skill(&second.join("two"), "two");
+        let result = crate::dispatch(
+            &mut manager,
+            &json!({"action":"check_now","rootIds":[first_id]}),
+        )
+        .unwrap();
+        assert_eq!(result["skills"].as_array().unwrap().len(), 1);
+        assert_eq!(result["skills"][0]["name"], "one");
+        assert_eq!(result["checkSummary"]["newLocal"], 1);
+        assert_eq!(manager.state.local_roots[0]["enabled"], false);
+        let result = crate::dispatch(
+            &mut manager,
+            &json!({"action":"check_now","rootIds":[second_id]}),
+        )
+        .unwrap();
+        assert_eq!(result["skills"].as_array().unwrap().len(), 2);
+        assert_eq!(result["checkSummary"]["newLocal"], 1);
+        skill(&second.join("three"), "three");
+        let invalid = json!({"action":"check_now","skillIds":null});
+        assert!(crate::dispatch(&mut manager, &invalid).is_err());
+        assert_eq!(manager.state.skills.len(), 2);
     }
 }
