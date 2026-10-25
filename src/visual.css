@@ -1,0 +1,91 @@
+/* Shared spacing and hierarchy; colors remain owned by the three existing themes. */
+.desktop-workspace{--space-xs:8px;--space-sm:12px;--space-md:16px;--space-lg:24px}
+.button{gap:7px;line-height:1.5;min-height:34px}
+.button svg,.icon-button svg,.text-button svg{flex-shrink:0}
+button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.button:disabled,.icon-button:disabled{cursor:not-allowed}
+.desktop-workspace .detail-title{align-items:flex-start;gap:12px}
+.desktop-workspace .detail-title>div{min-width:0;flex:1}
+.desktop-workspace .detail-title h2{line-height:1.35;overflow-wrap:anywhere;font-size:1.4rem;margin-bottom:6px}
+.desktop-workspace .detail-title>.badge{display:inline-flex;flex-shrink:0;margin-top:3px;max-width:40%;white-space:normal}
+.desktop-workspace .detail-title .monospace{font-size:.85rem;overflow-wrap:anywhere;display:block}
+.desktop-workspace .detail-description{line-height:1.85;font-size:.9rem;margin:16px 0 12px;overflow-wrap:anywhere}
+.desktop-workspace .detail-meta{display:flex;flex-wrap:wrap;gap:8px 16px;margin:12px 0;font-size:.85rem}
+.detail-organization{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin:12px 0}
+.detail-organization .detail-category{margin:0;display:flex;align-items:center;gap:8px}
+.detail-organization .favorite-button{margin:0;width:auto;min-width:0;gap:6px;padding:5px 9px;min-height:32px;font-size:.83rem}
+.detail-organization select{max-width:240px}
+.desktop-workspace .association-note{margin:12px 0;padding:0;border:0;font-size:.82rem;color:var(--text-secondary)}
+.association-note>summary{display:flex;align-items:center;gap:8px;list-style:none;cursor:pointer;padding:6px 0;color:var(--accent)}
+.association-note>summary::before{content:'▸';font-size:.75rem}.association-note[open]>summary::before{content:'▾'}
+.association-note>summary>span{color:var(--muted);font-size:.8rem;margin-left:4px}
+.association-note>p{margin:4px 0 10px;padding-left:20px;line-height:1.8;overflow-wrap:anywhere}
+.desktop-workspace .detail-actions{display:flex;gap:8px;flex-wrap:wrap;padding:14px 0 4px;margin-top:10px;border-top:1px solid var(--line)}
+.desktop-workspace .detail-actions .button{font-size:.83rem;padding:6px 10px}
+.desktop-workspace .detail-tabs{gap:14px;padding-inline:12px}
+.desktop-workspace .detail-tabs button{padding:11px 8px;font-size:.88rem;display:flex;gap:8px;align-items:center}
+.desktop-workspace .info-grid{grid-template-columns:minmax(100px,auto) minmax(0,1fr);gap:12px 20px;font-size:.86rem;line-height:1.8}
+.desktop-workspace .info-grid dt{align-self:start}
+.desktop-workspace .info-grid dd{min-width:0;overflow-wrap:anywhere}
+.desktop-workspace .info-grid .text-button{display:inline-flex;align-items:flex-start;gap:7px;max-width:100%;text-align:left;overflow-wrap:anywhere;white-space:normal;font:inherit}
+.desktop-workspace .info-grid .text-button svg{margin-top:4px}
+.desktop-workspace .info-grid .detail-source-link>span{min-width:0;overflow-wrap:anywhere}
+.desktop-workspace .file-location>small,.desktop-workspace .inventory-evidence,.desktop-workspace .runtime-controls{font-size:.8rem;line-height:1.7}
+.desktop-workspace .runtime-group-heading h3{font-size:.95rem;gap:8px 16px;align-items:baseline}
+.desktop-workspace .runtime-group-count{font-size:.8rem;line-height:1.6}
+.desktop-workspace .runtime-group-description{font-size:.84rem;line-height:1.8}
+.desktop-workspace .file-list .runtime-file-description>span:first-child{overflow-wrap:anywhere}
+.desktop-workspace .document-toolbar,.desktop-workspace .file-inventory-toolbar{gap:10px;flex-wrap:wrap;align-items:center}
+.desktop-workspace .document-read-status{display:flex;align-items:center;gap:8px;font-size:.85rem;line-height:1.8;color:var(--text-secondary);margin:10px 0}
+.desktop-workspace .connection-preview-list{display:grid;gap:14px}
+.desktop-workspace .connection-preview-entry{display:grid;gap:10px;padding:16px;border:1px solid var(--line);border-radius:8px;min-width:0}
+.desktop-workspace .connection-preview-entry>span{font-size:.86rem;color:var(--text-secondary)}
+.desktop-workspace .document-caption{display:flex;flex-wrap:wrap;gap:8px 18px;line-height:1.7;font-size:.82rem}
+.desktop-workspace .document-caption>span{overflow-wrap:anywhere;min-width:0}
+.desktop-workspace .helper-note,.desktop-workspace .inline-error,.desktop-workspace .inline-warning{line-height:1.8;overflow-wrap:anywhere}
+.desktop-workspace .inline-error,.desktop-workspace .inline-warning{align-items:flex-start}
+.desktop-workspace .library-filter-row,.desktop-workspace .library-selection-bar{gap:10px 16px}
+.desktop-workspace .table-footer{display:flex;align-items:center;justify-content:flex-end;gap:10px 16px;flex-wrap:wrap;line-height:1.7;padding:14px 16px;border-top:1px solid var(--line)}
+.desktop-workspace .table-footer>span:first-child{margin-right:auto}
+.desktop-workspace .table-footer>label{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.desktop-workspace .table-footer select{width:auto;min-width:88px;padding:6px 10px}
+.desktop-workspace .task-entry>span,.desktop-workspace .task-entry small{font-size:.78rem}
+.desktop-workspace .workflow-heading h2{font-size:1.2rem;line-height:1.5}
+.desktop-workspace .workflow-heading p{line-height:1.8}
+.desktop-workspace .workflow-footer{gap:10px;padding-block:12px}
+.desktop-workspace .empty{padding:36px 20px;min-width:0}
+.desktop-workspace .empty p{line-height:1.85;overflow-wrap:anywhere}
+.desktop-workspace .settings-layout{gap:20px}
+.desktop-workspace .settings-form small{line-height:1.8;font-size:.82rem}
+.desktop-workspace .client-root-note{margin-block:14px}
+.desktop-workspace .client-row-main{gap:8px 14px}
+.desktop-workspace .client-row summary{padding:5px 0;line-height:1.7}
+.desktop-workspace .network-panel .panel-heading{padding:20px 24px}
+.desktop-workspace .network-panel .panel-heading p{font-size:.9rem;line-height:1.8}
+.desktop-workspace .network-panel .panel-body{padding:20px 24px}
+@container workspace-pane (max-width:700px){
+  .desktop-workspace .page-header{display:flex;flex-wrap:wrap;gap:14px}
+  .desktop-workspace .header-actions{margin-top:0;flex-wrap:wrap}
+  .desktop-workspace .info-grid{grid-template-columns:minmax(0,1fr);gap:4px}
+  .desktop-workspace .info-grid dd{margin-bottom:12px}
+  .desktop-workspace .info-grid dt{font-weight:600}
+  .desktop-workspace .settings-layout{grid-template-columns:minmax(0,1fr)}
+  .desktop-workspace .detail-title h2{font-size:1.2rem}
+  .desktop-workspace .detail-title>.badge{max-width:45%;font-size:.78rem}
+  .desktop-workspace .detail-tabs{padding-inline:0;gap:10px;flex-wrap:wrap}
+  .desktop-workspace .detail-actions{gap:8px}
+  .desktop-workspace .runtime-group-heading h3{flex-wrap:wrap}
+  .desktop-workspace .client-toolbar .search-input{min-width:0;flex-basis:100%}
+  .desktop-workspace .client-toolbar{gap:10px;padding:14px}
+  .desktop-workspace .network-panel .panel-body,.desktop-workspace .network-panel .panel-heading{padding:16px}
+  .desktop-workspace .preview-layout{grid-template-columns:minmax(0,1fr)}
+  .desktop-workspace .preview-file-list{border-right:0;border-bottom:1px solid var(--line);max-height:200px}
+}
+@container workspace-pane (max-width:420px){
+  .desktop-workspace .detail-title{flex-wrap:wrap}
+  .desktop-workspace .detail-title>.badge{max-width:100%;margin-left:0}
+  .desktop-workspace .detail-organization{align-items:flex-start}
+  .desktop-workspace .detail-category{flex-wrap:wrap;min-width:0}
+  .desktop-workspace .detail-category select{max-width:100%}
+  .desktop-workspace .diff-columns{grid-template-columns:minmax(0,1fr)}
+}

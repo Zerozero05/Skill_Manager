@@ -1,0 +1,26 @@
+/* Flat file groups keep one clear section hierarchy and one control per resource. */
+.file-section{margin:20px 0;border:1px solid var(--line);border-radius:8px;min-width:0;background:var(--surface)}
+.file-section>summary{display:flex;align-items:center;gap:10px;padding:13px 15px;cursor:pointer;list-style:none;color:var(--text)}
+.file-section>summary::before{content:'›';font-size:1.3rem;line-height:1;flex:0 0 12px;text-align:center;color:var(--text-secondary)}
+.file-section[open]>summary::before{transform:rotate(90deg)}
+.file-section>summary h3{margin:0;font-size:1rem;font-weight:650;line-height:1.65;flex:1;min-width:0}
+.file-section>summary>span{font-size:.8rem;color:var(--text-secondary);text-align:right}
+.file-section[open]>summary{border-bottom:1px solid var(--line)}
+.file-section-body{min-width:0}.file-section-description{margin:0;padding:10px 15px;color:var(--text-secondary);font-size:.82rem;line-height:1.8}
+.file-section .file-list{border:0;border-radius:0;overflow:visible;margin:0}.file-section .runtime-group-empty{padding:0 15px 14px;margin:0}
+.file-section .external-group{margin:0 14px 12px}.file-section .runtime-checks-embedded{margin:0 14px 14px}
+.file-scope-summary{display:flex;align-items:flex-start;gap:9px;padding:12px 0;color:var(--text);line-height:1.8}
+.file-scope-summary>svg{flex:0 0 auto;margin-top:6px;color:var(--accent)}.file-scope-summary>span{flex:1;min-width:0}
+.file-scope-summary small{display:block;font-size:.8rem;color:var(--text-secondary)}.file-scope-summary>.text-button{font-size:.8rem;white-space:nowrap;margin-top:3px}
+.file-export-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:15px 0;border-top:1px solid var(--line);color:var(--text-secondary);font-size:.82rem}
+.file-export-footer>div{display:flex;gap:8px;flex-wrap:wrap}.file-management{margin:8px 0 20px;border-top:1px solid var(--line);padding-top:12px}
+.file-management>summary{font-size:.85rem;cursor:pointer;color:var(--text-secondary);line-height:1.8}.file-management>p{font-size:.82rem;color:var(--text-secondary);line-height:1.8}
+.file-management .external-toolbar{margin-top:14px}.file-inventory-toolbar{flex-wrap:wrap;gap:8px}
+.history-sidebar-entry{display:flex;align-items:center;gap:9px;flex:0 0 auto;width:100%;min-height:42px;padding:9px 10px;margin:8px 0 0;border:1px solid var(--control-line);border-radius:7px;background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer;font-size:.82rem}
+.history-sidebar-entry:hover{background:var(--surface-soft)}.history-sidebar-entry>svg{flex:0 0 auto}.history-sidebar-entry>span{flex:1;min-width:0}.history-sidebar-entry>small{color:var(--text-secondary);font-size:.75rem;white-space:nowrap}
+.sidebar-collapsed:not(.sidebar-flyout) .history-sidebar-entry{justify-content:center;padding:9px 2px}.sidebar-collapsed:not(.sidebar-flyout) .history-sidebar-entry>span,.sidebar-collapsed:not(.sidebar-flyout) .history-sidebar-entry>small{display:none}
+.main>.workspace-feedback{position:relative;z-index:1;margin:0 0 14px;max-width:100%}
+.operation-history-search{border-color:var(--control-line)}
+.pane-outline-list button.is-current{color:var(--text)}
+.file-resource-secondary{color:var(--text)}
+@container workspace-pane (max-width:600px){.file-section>summary{padding:11px 12px;align-items:flex-start}.file-section>summary>span{max-width:115px}.file-scope-summary{flex-wrap:wrap}.file-scope-summary>.text-button{margin-left:25px}.file-export-footer{align-items:flex-start}.file-export-footer>div{width:100%}}

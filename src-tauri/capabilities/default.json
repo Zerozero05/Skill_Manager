@@ -1,0 +1,1 @@
+{"identifier":"default","description":"Trusted bundled workspace windows: local dialogs and explicit HTTP(S) links only","windows":["main","workspace-*"],"permissions":["core:default","core:window:allow-destroy","core:window:allow-set-theme","dialog:allow-open","dialog:allow-save",{"identifier":"opener:allow-open-url","allow":[{"url":"https://*"},{"url":"http://*"}]}]}

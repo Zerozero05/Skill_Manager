@@ -1,0 +1,18 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Skill Manager",
+  "version": "../package.json",
+  "identifier": "io.skillmanager.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{"title":"Skill Manager","width":1280,"height":850,"minWidth":960,"minHeight":650,"dragDropEnabled":false,"zoomHotkeysEnabled":false}],
+    "security": {"csp":"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-src 'none'"}
+  },
+  "bundle": {"active":true,"targets":["nsis"],"useLocalToolsDir":true,"resources":{"../docs/THIRD_PARTY_NOTICES.txt":"THIRD_PARTY_NOTICES.txt"},"icon":["icons/icon.png","icons/icon.ico"],"shortDescription":"Local and GitHub Agent Skills manager","category":"DeveloperTool","windows":{"webviewInstallMode":{"type":"skip"},"nsis":{"installMode":"currentUser","languages":["SimpChinese","English"],"template":"installer.nsi"}}}
+}
+

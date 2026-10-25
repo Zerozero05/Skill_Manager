@@ -1,0 +1,37 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+.planning/
+work/
+upload-receipts/
+outputs/
+*.log
+*.tsbuildinfo
+/private-recovery/
+.env*
+!.env.example
+*.db
+*.db-*
+.build-deps/
+WORK_CHECKPOINT.md
+# Optional adjacent build environment; never publish caches, toolchains or fixtures.
+/rust/
+/target/
+/msvc-portable/
+/pnpm-store/
+/npm-cache/
+/corepack/
+/pnpm/
+/cache/
+/temp/
+/e2e-download-*/
+# Local management data and executable-side data directory selection.
+*.sqlite3
+*.sqlite3-*
+data-directory.txt
+storage-paths.json
+developer-paths.json
+/recovery/
+/webview/
+/启动 Skill Manager.cmd

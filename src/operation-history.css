@@ -1,0 +1,22 @@
+.operation-history { min-width: 0; padding: 1.4rem; }
+.operation-history-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.operation-history-heading h1 { margin: 0; font-size: 1.4rem; }
+.operation-history-heading p { margin: .45rem 0 0; }
+.operation-history-toolbar { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; margin: 1.2rem 0; }
+.operation-history-search { display: flex; align-items: center; flex: 1 1 15rem; gap: .5rem; padding: 0 .75rem; border: 1px solid var(--line); border-radius: 7px; background: var(--input); min-width: 0; }
+.operation-history-search input { flex: 1; min-width: 0; border: 0; background: transparent; box-shadow: none; }
+.operation-history-filter { display: flex; align-items: center; gap: .6rem; }
+.operation-history-error, .operation-history-note { white-space: pre-wrap; overflow-wrap: anywhere; }
+.operation-history-entries { border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.operation-history-row { padding: 1rem; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.operation-history-row:first-child { border-top: 0; }
+.operation-history-row-title { display: flex; align-items: baseline; justify-content: space-between; gap: .8rem; }
+.operation-history-row h2 { margin: 0; font-size: 1rem; }
+.operation-history-status { flex-shrink: 0; font-size: .82rem; color: var(--muted); }
+.operation-history-status.failed, .operation-history-status.interrupted, .operation-history-task-error { color: var(--bad); }
+.operation-history-stage { margin: .55rem 0; font-size: .88rem; }
+.operation-history-date { display: flex; flex-wrap: wrap; gap: .35rem 1rem; margin: .5rem 0; }
+.operation-history-task-error { white-space: pre-wrap; font-size: .88rem; }
+.operation-history-actions { display: flex; flex-wrap: wrap; gap: .55rem; margin-top: .85rem; }
+.operation-history-empty { padding: 2rem 1rem; margin: 0; text-align: center; }
+@media (max-width: 720px) { .operation-history { padding: 1rem; } .operation-history-row-title { align-items: flex-start; flex-wrap: wrap; gap: .4rem; } }

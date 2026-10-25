@@ -1,0 +1,26 @@
+/* Readable controls consume the single palette in themes.css. */
+.desktop-workspace :is(.markdown,.detail-description,.file-reader pre,.diff-columns pre,.runtime-file-description>span:first-child,.export-resource-name strong){color:var(--text)}
+.desktop-workspace :is(.external-item>code,.export-resource-name code,.export-resource-details code,.external-evidence code){color:var(--text)}
+.desktop-workspace :is(.external-note,.external-item p,.external-item>small,.external-item-footer>small,.external-export-choice,.external-evidence,.export-selection-description,.export-resource-reason,.export-resource-inclusion){color:var(--text-secondary)}
+.desktop-workspace :is(input:not([type=checkbox]):not([type=radio]),select,textarea){border-color:var(--control-line)}
+.desktop-workspace .button:not(.ghost):not(.primary){border-color:var(--control-line)}
+.desktop-workspace .button.primary{color:var(--on-accent)}
+.desktop-workspace :is(button:disabled,.button:disabled,.icon-button:disabled,.floating-menu-item:disabled,.floating-menu-item[aria-disabled=true],.assign-category-menu>summary.is-disabled,.file-source-switch button:disabled){opacity:1;color:var(--disabled-text);background:var(--disabled-bg);border-color:var(--control-line);cursor:not-allowed;box-shadow:none}
+.desktop-workspace :is(input:disabled,select:disabled,textarea:disabled){opacity:1;color:var(--disabled-text);background:var(--disabled-bg);border-color:var(--control-line);cursor:not-allowed;-webkit-text-fill-color:var(--disabled-text)}
+.desktop-workspace .button.primary:disabled{color:var(--disabled-text);background:var(--disabled-bg);border-color:var(--control-line)}
+.desktop-workspace .floating-menu-item:disabled{border-left:2px dashed var(--control-line)}
+.floating-menu-item:disabled,.floating-menu-item[aria-disabled=true]{opacity:1;color:var(--disabled-text);background:var(--disabled-bg);border-left:2px dashed var(--control-line);cursor:not-allowed}
+.desktop-workspace :is(.search,.search-input,.export-selection-search){border-color:var(--control-line)}
+.desktop-workspace input[type=checkbox]{appearance:none;-webkit-appearance:none;display:inline-grid;place-content:center;vertical-align:middle;width:1em;height:1em;min-width:14px;min-height:14px;flex:0 0 auto;padding:0;border:1.5px solid var(--control-line);border-radius:3px;background:var(--input);color:var(--on-accent);box-shadow:none;cursor:pointer}
+.desktop-workspace input[type=checkbox]::after{content:'';width:.52em;height:.27em;border-left:2px solid currentColor;border-bottom:2px solid currentColor;transform:translateY(-.05em) rotate(-45deg);opacity:0}
+.desktop-workspace input[type=checkbox]:checked{background:var(--accent);border-color:var(--accent)}
+.desktop-workspace input[type=checkbox]:checked::after{opacity:1}
+.desktop-workspace input[type=checkbox]:indeterminate{background:var(--accent);border-color:var(--accent)}
+.desktop-workspace input[type=checkbox]:indeterminate::after{width:.5em;height:0;border-left:0;border-bottom:2px solid currentColor;transform:none;opacity:1}
+.desktop-workspace input[type=checkbox]:disabled{border-style:dashed;background:var(--disabled-bg);border-color:var(--control-line);color:var(--disabled-text);cursor:not-allowed}
+.desktop-workspace :is(button,a,input,select,textarea,summary):focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.desktop-workspace :is(.external-file-inclusion,.export-resource-state,.external-export-choice>span){color:var(--text-secondary)}
+.desktop-workspace .external-sources>b{font-weight:550;background:var(--surface);border-color:var(--control-line);color:var(--text-secondary)}
+.desktop-workspace .external-file-inclusion:not(.is-excluded),.desktop-workspace .export-resource.is-included>.export-resource-main>.export-resource-state{color:var(--accent);border-color:var(--accent)}
+.desktop-workspace :is(.external-attached.has-issues>summary,.external-issue-count){color:var(--warn)}
+.desktop-workspace :is(.error-text,.storage-error,.export-selection-error){color:var(--bad)}

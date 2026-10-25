@@ -1,0 +1,49 @@
+/* Compact shared layout; existing font, zoom, scroll and task behavior stay authoritative. */
+.desktop-workspace .app-shell>.main{padding-top:1.25rem;scrollbar-gutter:stable}
+.desktop-workspace .page-header{margin-bottom:1.1rem;gap:.75rem}
+.desktop-workspace .page-header h1{margin-top:.45rem;margin-bottom:.4rem}
+.desktop-workspace .page-header p{margin:0;line-height:1.65}
+.desktop-workspace .eyebrow{margin-bottom:.3rem}
+.desktop-workspace .library-summary{margin:.7rem 0 1rem;gap:.55rem 1.25rem}
+.desktop-workspace .category-toolbar{margin-bottom:.75rem}
+.desktop-workspace .library-controls{padding:.9rem 1rem .65rem}
+.library-panel.library-cards{min-height:0;flex:initial;box-shadow:none;border-radius:10px}
+.desktop-workspace .library-controls .library-selection-bar{padding:.5rem 0 0;margin-top:.5rem;min-height:0;gap:.35rem .75rem;border-top:1px solid var(--line);background:transparent;font-size:.875rem}
+.desktop-workspace .library-selection-bar>.library-batch-actions{margin-left:auto;display:flex;gap:.4rem;align-items:center;flex-wrap:wrap}
+.desktop-workspace .library-mode button{white-space:nowrap}
+.desktop-workspace .table-category-chip{margin-left:.3rem;max-width:9rem;font-size:.75rem;padding:.1rem .35rem;flex:none}
+.desktop-workspace .skill-name-heading{gap:.35rem;flex-wrap:wrap}
+.desktop-workspace .skill-name-button{min-width:0}
+.desktop-workspace .skill-name-heading>.favorite-button{margin-left:0}
+.desktop-workspace .skill-row-bottom{flex-wrap:wrap;gap:.4rem}
+.library-card-source .source-path-link{max-width:100%;font-size:.8125rem}
+.library-card-actions>div{display:flex;align-items:center;gap:.4rem;flex-wrap:wrap}
+.desktop-workspace .category-select>.category-color-dot{margin-right:2px}
+.desktop-workspace .detail-category>.category-color-dot{margin-right:-3px}
+.desktop-workspace .pane-outline-list button{font-size:1rem;line-height:1.55}
+.desktop-workspace .pane-outline-list button[data-level="2"]{font-size:.95rem;padding-left:1.2rem}
+.desktop-workspace .pane-outline-list button.is-current{font-weight:650;color:var(--text)}
+.desktop-workspace .runtime-group-summary::before,.desktop-workspace .comparison-basis>summary::before{align-self:center;transform-origin:center;margin-top:0}
+.desktop-workspace .runtime-file-group[open]>.runtime-group-summary::before,.desktop-workspace .comparison-basis[open]>summary::before{margin-top:0}
+.destination-option input[type=radio]{width:1rem;height:1rem;accent-color:var(--accent);margin:0;cursor:pointer}
+@container workspace-pane (max-width:700px){
+  .desktop-workspace .library-search-row{align-items:stretch;gap:.6rem;flex-wrap:wrap}
+  .desktop-workspace .library-search-row>.library-mode{margin-left:auto}
+  .desktop-workspace .library-selection-bar>.library-batch-actions{margin-left:0;width:100%}
+  .desktop-workspace .table-category-chip{max-width:7rem}
+}
+/* Compact hierarchy: one title, one source overview, contextual category and actions. */
+.desktop-workspace .sidebar nav{margin-top:1rem}
+.desktop-workspace .page-header{margin-bottom:.65rem;align-items:center}
+.desktop-workspace .page-header h1{margin:0;font-size:1.5rem;line-height:1.4}
+.desktop-workspace .page-header .header-actions{margin-top:0;flex-wrap:wrap}
+.desktop-workspace .library-summary{padding:0;margin:.15rem 0 .85rem;border:0;gap:.4rem 1rem;font-size:.85rem;flex-wrap:wrap}
+.desktop-workspace .library-summary .summary-number{font-size:1rem}
+.desktop-workspace .category-toolbar{margin-bottom:.65rem}
+.desktop-workspace .skill-source-cell{vertical-align:middle}
+.desktop-workspace .skill-source-cell>.source-path-link{display:inline-flex;vertical-align:middle;max-width:calc(100% - 2rem)}
+.desktop-workspace .source-path-link.is-icon{width:1.6rem;height:1.6rem;justify-content:center;border-radius:4px;flex:none}
+.desktop-workspace .source-path-link.is-icon:hover{background:var(--hover)}
+.desktop-workspace .skill-table-description:empty{display:none}
+.desktop-workspace .page-footer{justify-content:flex-end;padding-block:.6rem;font-size:.75rem}
+@container workspace-pane (max-width:700px){.desktop-workspace .page-header{align-items:flex-start;gap:.65rem}.desktop-workspace .page-header .header-actions{width:100%;margin:0}.desktop-workspace .library-summary{gap:.35rem .75rem}}
