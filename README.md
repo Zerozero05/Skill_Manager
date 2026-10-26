@@ -2,11 +2,13 @@
 
 Windows-first desktop manager for local and GitHub Agent Skills. Keep one runtime folder per skill, read full documentation from its source, and connect existing AI clients to the same files.
 
-当前候选版本为 **v0.2.9**；最新正式发行版本为 **v0.2.7**。候选构建用于修复验证，不代表已经发布新版。界面使用中文。应用版本以 `package.json` 为界面与打包版本来源。
+最新正式发行版本为 **v0.2.10**，合并此前 v0.2.8、v0.2.9 候选中的修复和自动发现功能。界面使用中文。应用版本以 `package.json` 为界面与打包版本来源。
 
-[公开仓库](https://github.com/Zerozero05/Skill_Manager) · [v0.2.7 下载与校验](https://github.com/Zerozero05/Skill_Manager/releases/tag/v0.2.7) · [使用指南](docs/USER_GUIDE.md) · [发行说明](docs/RELEASE_v0.2.7.md)
+[公开仓库](https://github.com/Zerozero05/Skill_Manager) · [v0.2.10 下载与校验](https://github.com/Zerozero05/Skill_Manager/releases/tag/v0.2.10) · [使用指南](docs/USER_GUIDE.md) · [发行说明](docs/RELEASE_v0.2.10.md)
 
 Windows x64 用户可选择便携 ZIP 或安装包；源码 ZIP 用于开发与维护，具体文件和校验摘要以发行页为准。程序需要 Microsoft Edge WebView2 Runtime。
+
+当前便携包的 `data-directory.txt` 为 `.`，新使用时把管理数据保存在程序同目录。升级既有安装时保留原数据目录与自定义路径侧文件，不用通用包的默认路径覆盖原设置。安装器与便携包包含同一份已验 EXE；安装器内容已解包核验，安装向导尚未实际运行。
 
 **许可状态：** 项目自身尚未指定开源许可证，公开源码不等于授予 MIT 等额外使用许可；第三方依赖继续遵循各自许可证，详见 [THIRD_PARTY_NOTICES](docs/THIRD_PARTY_NOTICES.txt) 和 [来源记录](docs/SOURCES.md)。
 
@@ -170,7 +172,7 @@ v0.2.7通过351项Rust测试、136项Node测试、TypeScript／Vite、格式与C
 
 | 版本 | 日期 | 主要变更 |
 | --- | --- | --- |
-| v0.2.10（候选，未发布） | 2026-10-26 | 1、忽略的 Skill 改为逐行列表，名称和路径分层显示，批量恢复保持。[完整记录](CHANGELOG.md#v0210-candidate)<br>2、自动导入目录改为紧凑行，保留检查并将其他操作收进更多菜单；适配窄分栏、字号与缩放。[完整记录](CHANGELOG.md#v0210-candidate) |
+| v0.2.10（正式发行） | 2026-10-27 | 1、整合 v0.2.8／v0.2.9 的导出与原生关闭修复、自动导入、统一检查及可靠关联。[完整记录](CHANGELOG.md#v0210-release)<br>2、修复中文文件引用与有效绑定误报，保留未知安装历史及本地内容。[完整记录](CHANGELOG.md#v0210-release)<br>3、忽略项逐行显示，目录紧凑对齐并采用检查＋更多菜单，保留批量与键盘操作。[完整记录](CHANGELOG.md#v0210-release)<br>4、沿用三主题、字号与缩放，36组布局检查和174前端／382Rust通过。[完整记录](CHANGELOG.md#v0210-release)<br>5、发布同EXE的便携包与NSIS安装器、源码及校验材料；无数据库迁移，安装向导未测。[完整记录](CHANGELOG.md#v0210-release) |
 | v0.2.9（候选，未发布） | 2026-10-26 | 1、增加自动导入目录及忽略项管理，按真实路径去重。[完整记录](CHANGELOG.md#v029-candidate)<br>2、统一全局自动／手动检查及变化页批量操作，同快照发现并关联来源。[完整记录](CHANGELOG.md#v029-candidate)<br>3、修复中文模板路径与有效绑定误报，审计缓存按分析器版本失效。[完整记录](CHANGELOG.md#v029-candidate)<br>4、本地事件防抖、远端提交探测及空轮次去重，保留缓存优先阅读和现有功能。[完整记录](CHANGELOG.md#v029-candidate) |
 | v0.2.8（候选，未发布） | 2026-10-26 | 1、修复监听失败阻断导出清单、重试入口不完整及可选文件禁用，保留跨窗共享选择与导出核验。[完整记录](CHANGELOG.md#v028-candidate)<br>2、统一客户端吸顶头部与折叠信息，消除顶部空带和不必要的横向滚动条。[完整记录](CHANGELOG.md#v028-candidate)<br>3、便携版直接提供程序本体及同目录路径配置，保留既有管理数据。[完整记录](CHANGELOG.md#v028-candidate)<br>4、云端 Windows 检查与候选附件分开记录，原生界面验收不由单元测试代替。[完整记录](CHANGELOG.md#v028-candidate) |
 | v0.2.7（首次公开发行） | 2026-10-25 | 1、快捷键帮助改为独立浮层，按当前列表／卡片显示真实按键，在所属窗格和视口内翻转、限高与滚动；保留键盘、外点和焦点操作。[本次完整记录](CHANGELOG.md#v027-release)<br>2、分类使用八色实心标签，增强文字、色面与背景区别，去掉标签内重复圆点；现有分类、颜色身份与连续撤销保持。[本次完整记录](CHANGELOG.md#v027-release)<br>3、夜间参照用户GPT截图采用炭黑／石墨灰，明亮使用浅灰／白色，护眼使用低亮度暖灰米色；正文、辅助文字、控件及原生标题栏分别适配。[本次完整记录](CHANGELOG.md#v027-release)<br>4、工作台统一紧凑标题、统计和工具栏，省去重复分类、空用途、未知版本和零连接占位；标签栏预留细横滚槽，任务徽标不再挤压主区；真实内容、搜索筛选和全部操作保留。[本次完整记录](CHANGELOG.md#v027-release)<br>5、详情、导出、变化、客户端、设置和操作记录减少重复说明，普通解释按需展开；关键警告、完整路径、真实来源、文件范围与失败恢复保留。[本次完整记录](CHANGELOG.md#v027-release)<br>6、保持既有本地／GitHub操作、ZIP必要／可选选择、多标签／分屏、目录跳转、默认／自定义目标、设置与缓存；管理操作保存完成后才启用撤销，避免提前按键无效；不新增依赖或数据迁移。[本次完整记录](CHANGELOG.md#v027-release)<br>7、首次公开发行：使用独立公开仓库管理源码和版本，补充下载、许可及校验说明；正式源码排除构建缓存和私有运行资料，程序版本与行为保持不变。[本次完整记录](CHANGELOG.md#v027-release) |
