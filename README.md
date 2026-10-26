@@ -2,11 +2,11 @@
 
 Windows-first desktop manager for local and GitHub Agent Skills. Keep one runtime folder per skill, read full documentation from its source, and connect existing AI clients to the same files.
 
-最新正式发行版本为 **v0.2.10**，合并此前 v0.2.8、v0.2.9 候选中的修复和自动发现功能。界面使用中文。应用版本以 `package.json` 为界面与打包版本来源。
+最新正式发行版本为 **v0.2.11**，修复说明更新长期停留待办、旧自动文件范围和脚本参数误判，并精简变化页的批量选择。界面使用中文。应用版本以 `package.json` 为界面与打包版本来源。
 
-[公开仓库](https://github.com/Zerozero05/Skill_Manager) · [v0.2.10 下载与校验](https://github.com/Zerozero05/Skill_Manager/releases/tag/v0.2.10) · [使用指南](docs/USER_GUIDE.md) · [发行说明](docs/RELEASE_v0.2.10.md)
+[公开仓库](https://github.com/Zerozero05/Skill_Manager) · [v0.2.11 下载与校验](https://github.com/Zerozero05/Skill_Manager/releases/tag/v0.2.11) · [使用指南](docs/USER_GUIDE.md) · [发行说明](docs/RELEASE_v0.2.11.md)
 
-正在准备 **v0.2.11 候选**：说明更新检查完成后退出待办，校正有充分证据的旧自动文件范围，区分脚本入口与调用参数，并精简变化页的批量选择工具。追加界面改动后的完整 CI 与原生验收尚待完成，未正式发布；正式下载仍为 v0.2.10。[候选说明](docs/RELEASE_v0.2.11.md)
+本版通过183项前端、389项Rust检查及Windows构建；原生变化页、选择快捷键、宽窄分栏和重启保持已验证。便携包、安装器与源码分别提供，附件摘要和验证边界见[发行说明](docs/RELEASE_v0.2.11.md)。
 
 Windows x64 用户可选择便携 ZIP 或安装包；源码 ZIP 用于开发与维护，具体文件和校验摘要以发行页为准。程序需要 Microsoft Edge WebView2 Runtime。
 
@@ -174,7 +174,7 @@ v0.2.7通过351项Rust测试、136项Node测试、TypeScript／Vite、格式与C
 
 | 版本 | 日期 | 主要变更 |
 | --- | --- | --- |
-| v0.2.11（候选，未正式发布） | 2026-10-27 | 1、仅说明或管理信息的更新检查完成后归“内容一致”，退出待办；最近检查只记录本轮新变化，真实问题保留对应原因与操作。[完整记录](CHANGELOG.md#v0211-candidate)<br>2、仅在目录清单与新鲜两端一致证据同时成立时，修正 Hatch Pet 的旧自动范围28→23项，保护人工范围和原文件。[完整记录](CHANGELOG.md#v0211-candidate)<br>3、脚本入口与调用参数分开核对，避免把整段命令误报缺失。[完整记录](CHANGELOG.md#v0211-candidate)<br>4、变化页仅在需要时展开批量选择；单项直接重新检查，选择、数量和执行操作分组对齐，窄窗口自动换行。追加改动后的完整CI与原生验收待完成。[完整记录](CHANGELOG.md#v0211-candidate) |
+| v0.2.11（正式发行） | 2026-10-27 | 1、仅说明或管理信息的更新检查完成后归“内容一致”，退出待办；最近检查只记录本轮新变化，真实问题保留对应原因与操作。[完整记录](CHANGELOG.md#v0211-candidate)<br>2、仅在目录清单与新鲜两端一致证据同时成立时，修正 Hatch Pet 的旧自动范围28→23项，保护人工范围和原文件。[完整记录](CHANGELOG.md#v0211-candidate)<br>3、脚本入口与调用参数分开核对，避免把整段命令误报缺失。[完整记录](CHANGELOG.md#v0211-candidate)<br>4、变化页仅在需要时展开批量选择；单项直接重新检查，选择、数量和执行操作分组对齐，窄窗口自动换行。183项前端、389项Rust及原生界面／重启验收通过。[完整记录](CHANGELOG.md#v0211-candidate) |
 | v0.2.10（正式发行） | 2026-10-27 | 1、整合 v0.2.8／v0.2.9 的导出与原生关闭修复、自动导入、统一检查及可靠关联。[完整记录](CHANGELOG.md#v0210-release)<br>2、修复中文文件引用与有效绑定误报，保留未知安装历史及本地内容。[完整记录](CHANGELOG.md#v0210-release)<br>3、忽略项逐行显示，目录紧凑对齐并采用检查＋更多菜单，保留批量与键盘操作。[完整记录](CHANGELOG.md#v0210-release)<br>4、沿用三主题、字号与缩放，36组布局检查和174前端／382Rust通过。[完整记录](CHANGELOG.md#v0210-release)<br>5、发布同EXE的便携包与NSIS安装器、源码及校验材料；无数据库迁移，安装向导未测。[完整记录](CHANGELOG.md#v0210-release) |
 | v0.2.9（候选，未发布） | 2026-10-26 | 1、增加自动导入目录及忽略项管理，按真实路径去重。[完整记录](CHANGELOG.md#v029-candidate)<br>2、统一全局自动／手动检查及变化页批量操作，同快照发现并关联来源。[完整记录](CHANGELOG.md#v029-candidate)<br>3、修复中文模板路径与有效绑定误报，审计缓存按分析器版本失效。[完整记录](CHANGELOG.md#v029-candidate)<br>4、本地事件防抖、远端提交探测及空轮次去重，保留缓存优先阅读和现有功能。[完整记录](CHANGELOG.md#v029-candidate) |
 | v0.2.8（候选，未发布） | 2026-10-26 | 1、修复监听失败阻断导出清单、重试入口不完整及可选文件禁用，保留跨窗共享选择与导出核验。[完整记录](CHANGELOG.md#v028-candidate)<br>2、统一客户端吸顶头部与折叠信息，消除顶部空带和不必要的横向滚动条。[完整记录](CHANGELOG.md#v028-candidate)<br>3、便携版直接提供程序本体及同目录路径配置，保留既有管理数据。[完整记录](CHANGELOG.md#v028-candidate)<br>4、云端 Windows 检查与候选附件分开记录，原生界面验收不由单元测试代替。[完整记录](CHANGELOG.md#v028-candidate) |
