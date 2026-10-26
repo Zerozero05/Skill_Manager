@@ -1383,7 +1383,9 @@ fn script_command_entry(target: &str, all: &BTreeMap<String, String>) -> Option<
     let boundary = target.find(char::is_whitespace)?;
     let entry = &target[..boundary];
     (script_file(entry)
-        && ["scripts/", "./scripts/"].iter().any(|prefix| entry.starts_with(prefix))
+        && ["scripts/", "./scripts/"]
+            .iter()
+            .any(|prefix| entry.starts_with(prefix))
         && arguments(&target[boundary..]))
     .then(|| entry.to_owned())
 }

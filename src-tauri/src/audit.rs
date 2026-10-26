@@ -262,7 +262,11 @@ mod tests {
         let temp = fixture();
         let root = temp.path().join("manifest-cache");
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("SKILL.md"), "---\nname: fixture\n---\nInstructions.\n").unwrap();
+        fs::write(
+            root.join("SKILL.md"),
+            "---\nname: fixture\n---\nInstructions.\n",
+        )
+        .unwrap();
         fs::write(root.join("README.md"), "Optional notes.\n").unwrap();
         let mut record = local::draft(&root).unwrap();
         record["sourceId"] = json!("source");
