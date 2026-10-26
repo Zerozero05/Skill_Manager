@@ -144,7 +144,7 @@ test('historical and informational runtime records do not leak into the attentio
 });
 
 test('six visible categories retain every raw status, direction and overlay precedence', () => {
-  const expected: Record<string,string> = {local_only:'local_only',remote_only:'remote_only',synced:'synced',local_modified:'changed',remote_updated:'changed',both_modified:'changed',docs_updated:'changed',unknown_baseline:'review',local_extra:'review',error:'problem',remote_missing:'problem',remote_check_required:'review'};
+  const expected: Record<string,string> = {local_only:'local_only',remote_only:'remote_only',synced:'synced',local_modified:'changed',remote_updated:'changed',both_modified:'changed',docs_updated:'synced',unknown_baseline:'review',local_extra:'review',error:'problem',remote_missing:'problem',remote_check_required:'review'};
   assert.equal(LIBRARY_STATUS_GROUPS.length, 6);
   for (const [status, group] of Object.entries(expected)) {
     const skill:LibraryItem = {id:status,name:status,status};
@@ -157,12 +157,13 @@ test('six visible categories retain every raw status, direction and overlay prec
   assert.equal(overlaid.key,'remote_missing'); assert.equal(overlaid.label,'检查异常');
   assert.equal(displayStatus({id:'local',name:'local',status:'local_modified'}).detail,'本地有修改');
   assert.equal(displayStatus({id:'remote',name:'remote',status:'remote_updated'}).detail,'远端有更新');
-  assert.equal(displayStatus({id:'docs',name:'docs',status:'docs_updated'}).detail,'仅说明有更新');
+  assert.equal(displayStatus({id:'docs',name:'docs',status:'docs_updated'}).detail,'已核对范围内容一致');
 });
 
 test('group filters are additive while legacy subtype filters remain exact', () => {
   const items:LibraryItem[] = ['local_modified','remote_updated','both_modified','docs_updated','unknown_baseline','local_extra','synced'].map(status => ({id:status,name:status,status}));
-  assert.equal(queryLibrary(items,{statusFilter:'changed'}).length,4);
+  assert.equal(queryLibrary(items,{statusFilter:'changed'}).length,3);
+  assert.deepEqual(queryLibrary(items,{statusFilter:'synced'}).map(item => item.id),['docs_updated','synced']);
   assert.deepEqual(queryLibrary(items,{statusFilter:'local_modified'}).map(item => item.id),['local_modified']);
   assert.deepEqual(queryLibrary(items,{statusFilter:'review'}).map(item => item.id),['local_extra','unknown_baseline']);
   const unknown:LibraryItem = {id:'unknown',name:'unknown',status:'future-status'};
@@ -174,6 +175,35 @@ test('group filters are additive while legacy subtype filters remain exact', () 
     const value = displayStatus({...unknown,status});
     assert.equal(value.key,status); assert.equal(value.group,'review'); assert.equal(value.detail,'状态未知');
   }
+});
+
+test('checked documentation shares normal presentation, sorting and facets without rewriting its raw status', () => {
+  const items:LibraryItem[] = [
+    {id:'docs',name:'z documentation',sourceId:'repo',localPath:'D:/docs',status:'docs_updated'},
+    {id:'same',name:'a unchanged',sourceId:'repo',localPath:'D:/same',status:'synced'},
+  ];
+  const before = structuredClone(items), visible = displayStatus(items[0]);
+  assert.equal(visible.key,'docs_updated');
+  assert.equal(visible.group,'synced');
+  assert.equal(visible.label,'内容一致');
+  assert.equal(visible.tone,displayStatus(items[1]).tone);
+  assert.equal(needsAttention(items[0]),false);
+  assert.deepEqual(queryLibrary(items,{sort:'status'}).map(item => item.id),['same','docs']);
+  assert.deepEqual(queryLibrary(items,{statusFilter:'attention'}),[]);
+  assert.deepEqual(queryLibrary(items,{statusFilter:'changed'}),[]);
+  assert.deepEqual(queryLibrary(items,{statusFilter:'docs_updated'}).map(item => item.id),['docs']);
+  assert.deepEqual(libraryStatusOptions(items).map(option => [option.value,option.count]),[['all',2],['synced',2]]);
+  assert.deepEqual(items,before);
+});
+
+test('actual audit review and failures stay actionable without promoting ordinary environment information', () => {
+  const docs:LibraryItem={id:'docs',name:'docs',status:'docs_updated',runtimeIssues:[{category:'external',severity:'warning',source:'SKILL.md',target:'shared/rules.md',reason:'Environment capability is documented'}]};
+  assert.equal(needsAttention(docs),false);
+  assert.equal(needsAttention({...docs,runtimeAudit:{status:'passed'}}),false);
+  assert.equal(needsAttention({...docs,runtimeAudit:{status:'not_verified'}}),false);
+  assert.equal(needsAttention({...docs,runtimeAudit:{status:'needs_review',reason:'Required external file is unavailable'}}),true);
+  assert.equal(needsAttention({...docs,runtimeIssues:[],runtimeAudit:{status:'failed',reason:'Inventory could not be read'}}),true);
+  assert.deepEqual(queryLibrary([docs,{...docs,id:'required',runtimeAudit:{status:'needs_review'}}],{statusFilter:'attention'}).map(item=>item.id),['required']);
 });
 
 test('dynamic status counts use category, source and search before the selected status', () => {

@@ -4,7 +4,7 @@ import { changePrimaryAction, changeReason, changesGroup, changesSummary, displa
 import './updates-v025.css';
 
 export type ChangesSourceError = { id: string; repo: string; error?: string | null; lastChecked?: string | null; branch?: string };
-export type CheckSummary = { checkedAt?: string; newLocal?: number; newRemote?: number; associated?: number; needsAttention?: number; errors?: number; rootErrors?: string[] };
+export type CheckSummary = { checkedAt?: string; newLocal?: number; newRemote?: number; associated?: number; docsUpdated?: number; needsAttention?: number; errors?: number; rootErrors?: string[] };
 export type ChangesPanelProps<T extends LibraryItem> = {
   skills: readonly T[];
   sourceErrors?: readonly ChangesSourceError[];
@@ -31,8 +31,9 @@ export function ChangesPanel<T extends LibraryItem>({ skills, sourceErrors = [],
   const filtered = useMemo(() => group === 'all' ? matching : matching.filter(skill => changesGroup(skill) === group), [matching, group]);
   const result = paginateLibrary(filtered, page, pageSize);
   const sources = sourceErrors.filter(source => !!source.error);
-  const selected = selection.filter(id => skills.some(skill => skill.id === id));
+  const selected = selection.filter(id => skills.some(skill => skill.id === id && changesGroup(skill) !== null));
   useEffect(() => { if (page !== result.page) setPage(result.page); }, [page, result.page]);
+  useEffect(() => { setSelection(previous => { const pending = previous.filter(id => skills.some(skill => skill.id === id && changesGroup(skill) !== null)); return pending.length === previous.length ? previous : pending; }); }, [skills]);
   function selectGroup(value: ChangesFilter) { setGroup(value); setPage(1); }
   function runPrimary(skill: T) {
     const action = changePrimaryAction(skill);
@@ -43,7 +44,7 @@ export function ChangesPanel<T extends LibraryItem>({ skills, sourceErrors = [],
     else onOpen(skill, skill.associationPending || displayStatus(skill).key === 'unknown_baseline' ? 'source' : undefined);
   }
   return <section className="changes-panel" aria-label="变化与待核对">
-    {checkSummary && <details className="check-recap" data-fold-key="recent-check"><summary><strong>最近检查</strong><span>{checked(checkSummary.checkedAt)}</span></summary><dl><div><dt>新登记</dt><dd>{(checkSummary.newLocal || 0) + (checkSummary.newRemote || 0)}</dd></div><div><dt>新关联</dt><dd>{checkSummary.associated || 0}</dd></div><div><dt>需处理</dt><dd>{checkSummary.needsAttention || 0}</dd></div><div><dt>异常</dt><dd>{checkSummary.errors || 0}</dd></div></dl>{checkSummary.rootErrors?.map((error, index) => <p className="error-text" key={index}>{error}</p>)}</details>}
+    {checkSummary && <details className="check-recap" data-fold-key="recent-check"><summary><strong>最近检查</strong><span>{checked(checkSummary.checkedAt)}</span></summary><dl><div><dt>新登记</dt><dd>{(checkSummary.newLocal || 0) + (checkSummary.newRemote || 0)}</dd></div><div><dt>新关联</dt><dd>{checkSummary.associated || 0}</dd></div>{checkSummary.docsUpdated !== undefined && <div><dt>已处理说明</dt><dd>{checkSummary.docsUpdated}</dd></div>}<div><dt>需处理</dt><dd>{checkSummary.needsAttention || 0}</dd></div><div><dt>异常</dt><dd>{checkSummary.errors || 0}</dd></div></dl>{checkSummary.rootErrors?.map((error, index) => <p className="error-text" key={index}>{error}</p>)}</details>}
     <div className="changes-overview" aria-label="需要关注的 Skill 分类">{groups.map(value => { const Icon = icons[value]; return <button key={value} className={`changes-overview-item is-${value}`} type="button" aria-pressed={group === value} onClick={() => selectGroup(group === value ? 'all' : value)}><Icon size={18} aria-hidden="true" /><strong>{counts[value]}</strong><span>{statusFilterLabel(value)}</span></button>; })}</div>
     <div className="changes-results">
       <div className="changes-toolbar">

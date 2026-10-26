@@ -358,7 +358,11 @@ fn inspect_issues_with_reader(
         if item.role == "history" { item.status="reference".into(); item.reason="维护、历史或来源信息，不属于缺失的运行文件".into(); }
         if item.reference_kind=="command" {
             item.role="environment".into();item.required=false;item.status="environment".into();
-            item.reason="客户端斜杠命令，不是文件路径；无需绑定文件或加入 ZIP".into();
+            item.reason=if issue.reason.starts_with("脚本调用") {
+                "脚本入口已单独核对；调用参数不是静态文件，无需绑定或加入 ZIP"
+            } else {
+                "客户端斜杠命令，不是文件路径；无需绑定文件或加入 ZIP"
+            }.into();
             item.local=json!({"status":"not_applicable"});return Some(item);
         }
         let Some(path) = path else {

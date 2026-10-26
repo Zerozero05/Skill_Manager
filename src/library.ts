@@ -21,14 +21,15 @@ export interface LibraryItem {
   localPath?: string | null; remotePath?: string | null; sourceId?: string | null;
   status?: string; error?: string | null; remoteMissing?: boolean; remoteCheckRequired?: boolean;
   localNotice?: string | null; untrackedFiles?: readonly string[]; runtimeWarnings?: readonly string[]; runtimeIssues?: RuntimeIssue[];
+  runtimeAudit?: { status: string; reason?: string | null };
   readOnly?: boolean; lastChecked?: string | null; categoryId?: string | null;
   favorite?: boolean; comparisonScope?: readonly string[]; runtimeConfirmed?: boolean;
   baselineCommit?: string | null; baselineKind?: string; installedCommit?: string | null; commit?: string | null; lastLocalCheckedAt?: string | null; lastRemoteCheckedAt?: string | null;
   changeDetails?: readonly {path: string; change: string; side?: string}[];
   comparisonNote?: string | null; associationNote?: string | null; associationPending?: boolean;
 }
-const attention = new Set(['error', 'remote_missing', 'remote_check_required', 'remote_updated', 'local_modified', 'both_modified', 'docs_updated', 'unknown_baseline', 'local_extra']);
-const priority: Record<string, number> = { error: 0, remote_missing: 0, both_modified: 1, remote_updated: 2, local_modified: 3, docs_updated: 4, remote_check_required: 5, unknown_baseline: 5, local_extra: 6, remote_only: 7, synced: 8, local_only: 9 };
+const attention = new Set(['error', 'remote_missing', 'remote_check_required', 'remote_updated', 'local_modified', 'both_modified', 'unknown_baseline', 'local_extra']);
+const priority: Record<string, number> = { error: 0, remote_missing: 0, both_modified: 1, remote_updated: 2, local_modified: 3, docs_updated: 8, remote_check_required: 5, unknown_baseline: 5, local_extra: 6, remote_only: 7, synced: 8, local_only: 9 };
 const groups: Record<LibraryStatusGroup, {label: string; tone: string}> = {
   local_only:{label:'仅本地',tone:'neutral'}, remote_only:{label:'可下载',tone:'blue'}, synced:{label:'内容一致',tone:'green'},
   changed:{label:'有变化',tone:'amber'}, review:{label:'待核对',tone:'amber'}, problem:{label:'检查异常',tone:'red'},
@@ -39,7 +40,7 @@ const statuses: Record<string, {group: LibraryStatusGroup; detail: string}> = {
   local_only:{group:'local_only',detail:'尚未关联 GitHub 来源'}, remote_only:{group:'remote_only',detail:'尚未下载到本地'},
   synced:{group:'synced',detail:'已核对范围内容一致'}, local_modified:{group:'changed',detail:'本地有修改'},
   remote_updated:{group:'changed',detail:'远端有更新'}, both_modified:{group:'changed',detail:'双方有变化'},
-  docs_updated:{group:'changed',detail:'仅说明有更新'}, unknown_baseline:{group:'review',detail:'基准或范围待核对'},
+  docs_updated:{group:'synced',detail:'已核对范围内容一致'}, unknown_baseline:{group:'review',detail:'基准或范围待核对'},
   local_extra:{group:'review',detail:'范围外有本地文件'}, remote_missing:{group:'problem',detail:'远端对应目录缺失'},
   remote_check_required:{group:'review',detail:'当前远端尚未核对'}, error:{group:'problem',detail:'本次检查未完成'},
 };
@@ -59,7 +60,7 @@ export function statusExplanation(skill: LibraryItem): string {
   const meaning: Record<string,string> = {
     synced:'最近比较时，已核对范围内的文件内容一致；不代表整个目录或GitHub此刻的最新内容完全相同。',
     local_extra:'存在比较范围外的本地文件，需核对是否纳入运行清单；这些文件尚不等于待上传修改。',
-    docs_updated:'运行比较内容一致，远端说明或管理信息有更新；无需重装运行文件来刷新说明。',
+    docs_updated:'运行比较内容一致，远端说明或管理信息的更新已检查；无需重装运行文件来刷新说明。',
     error:`本次检查异常，不能把之前的一致结果当作当前结论。${skill.error || ''}`,
     remote_missing:'远端对应目录已缺失；本地文件仍保留，请核对来源。',
     remote_check_required:'需要重新核对远端，当前不能确认GitHub最新状态。',
@@ -102,9 +103,10 @@ export function githubFolderUrl(source: { repo?: string | null; branch?: string 
   const ref = source.branch || source.commit || 'HEAD';
   return `https://github.com/${source.repo.split('/').map(encodeURIComponent).join('/')}/tree/${encodeURIComponent(ref)}${parts.length ? '/' + parts.map(encodeURIComponent).join('/') : ''}`;
 }
+const runtimeAuditNeedsAttention = (skill: LibraryItem) => skill.runtimeAudit?.status === 'needs_review' || skill.runtimeAudit?.status === 'failed';
 export function needsAttention(skill: LibraryItem): boolean {
   const runtimeAttention = skill.runtimeIssues === undefined ? skill.runtimeWarnings?.length : runtimeAttentionCount(skill.runtimeIssues);
-  return Boolean(skill.associationPending || skill.localNotice || skill.untrackedFiles?.length || runtimeAttention || attention.has(displayStatus(skill).key));
+  return Boolean(skill.associationPending || skill.localNotice || skill.untrackedFiles?.length || runtimeAttention || runtimeAuditNeedsAttention(skill) || attention.has(displayStatus(skill).key));
 }
 export function queryLibrary<T extends LibraryItem>(items: readonly T[], options: LibraryQuery = {}): T[] {
   const terms = normalize(options.query || '').trim().split(/\s+/).filter(Boolean);
@@ -160,9 +162,10 @@ export function changeReason(skill: LibraryItem): string {
   if (status.key === 'remote_missing') return '远端对应目录已缺失；本地文件继续保留，请核对来源。';
   if (status.key === 'remote_check_required') return '尚未核对当前远端，不能把上次比较结果当作当前状态。';
   if (skill.associationPending) return skill.associationNote || '发现多个可能的来源，请在来源页选择对应项。';
+  if (runtimeAuditNeedsAttention(skill)) return skill.runtimeAudit?.reason || (skill.runtimeAudit?.status === 'failed' ? '运行文件检查未完成，请在文件页查看原因并重新核对。' : '运行文件或必要引用尚未核对完整，请查看文件。');
   if (status.key === 'unknown_baseline') return skill.comparisonNote || (skill.baselineCommit ? '已有比较基准，但当前范围或差异仍需核对；不判断哪侧较新。' : '比较基准尚未核实，不能判断哪侧较新。');
   if (status.key === 'local_extra') return skill.localNotice || `${skill.untrackedFiles?.length ? `范围外有 ${skill.untrackedFiles.length} 个本地文件` : '有范围外本地文件'}，尚不等于待上传修改。`;
-  if (status.key === 'docs_updated') return '运行比较内容一致，仅远端说明或管理信息更新，无需重装运行文件。';
+  if (status.key === 'docs_updated' && !needsAttention(skill)) return '运行比较内容一致，远端说明或管理信息的更新已检查，无需重装运行文件。';
   if (status.key === 'both_modified') return '本地与远端均有内容变化，请先比较差异，再决定处理方向。';
   if (status.key === 'local_modified') return '已核对范围内的本地内容有修改，提交前仍需预览并确认。';
   if (status.key === 'remote_updated') return '已核对范围内的远端内容有更新，应用前仍需预览并确认。';
@@ -174,7 +177,8 @@ export function changePrimaryAction(skill: LibraryItem): {kind:ChangeActionKind;
   const status = displayStatus(skill);
   if (status.group === 'problem' || status.key === 'remote_check_required') return {kind:'check',label:'重新检查'};
   if (skill.associationPending) return {kind:'open',label:'选择来源'};
-  if (status.key === 'docs_updated') return {kind:'docs',label:'查看说明'};
+  if (runtimeAuditNeedsAttention(skill)) return {kind:'files',label:'查看文件'};
+  if (status.key === 'docs_updated') return needsAttention(skill) ? {kind:'files',label:'查看文件'} : {kind:'docs',label:'查看说明'};
   if (status.key === 'local_extra') return {kind:'files',label:'查看文件'};
   if (status.key === 'unknown_baseline') return {kind:'open',label:'核对依据'};
   if (status.group === 'changed' && skill.sourceId && skill.localPath) return {kind:'compare',label:status.key === 'remote_updated' ? '预览更新' : '查看差异'};

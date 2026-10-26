@@ -205,7 +205,7 @@ fn catalog_item<'a>(items: &'a [Value], path: &str) -> Option<&'a Value> {
         .iter()
         .find(|i| catalog_path(i).as_deref() == Some(path))
 }
-fn declared_runtime(item: Option<&Value>) -> Option<Vec<String>> {
+pub(crate) fn declared_runtime(item: Option<&Value>) -> Option<Vec<String>> {
     item.and_then(|i| {
         [
             i.get("runtime_files"),
@@ -904,12 +904,92 @@ fn record_verification(skill: &mut Value, commit: &str, private: bool, verified:
     }
 }
 
+fn obsolete_development_selection(path: &str) -> bool {
+    path.split('/').any(|part| matches!(part, "tests" | "__pycache__"))
+        || path.ends_with(".pyc")
+}
+
+// A stale unconfirmed suggestion is not evidence that a file is required.
+// Repair only absent development entries, using a complete catalog candidate
+// and fresh equality proof. The original record survives every failed proof.
+fn rebuilt_automatic_scope(
+    skill: &Value,
+    manifest: Option<&[String]>,
+    item: Option<&Value>,
+    verify: impl FnOnce(&Value) -> Result<VerifiedSkill, String>,
+) -> Result<Option<(Value, VerifiedSkill)>, String> {
+    if crate::audit::preserves_manual_scope(skill)
+        || skill["readOnly"] == true
+        || skill["localPath"].as_str().is_none()
+        || !(skill["runtimeConfirmationKind"] == "automatic"
+            || skill["runtimeConfirmed"] == false && skill["runtimeAudit"]["method"] == "static_package")
+    {
+        return Ok(None);
+    }
+    let Some(manifest) = manifest else {
+        return Ok(None);
+    };
+    let old: BTreeSet<_> = paths(&skill["runtimeFiles"]).into_iter().collect();
+    let mut proposed: BTreeSet<_> = checked_selection(manifest)?.into_iter().collect();
+    if !old.difference(&proposed).any(|path| obsolete_development_selection(path)) {
+        return Ok(None);
+    }
+    let inventory = current_hashes(skill)?;
+    // Existing extra choices are retained, even for automatic/legacy records.
+    proposed.extend(old.iter().filter(|path| inventory.contains_key(*path)).cloned());
+    let removed: Vec<_> = old.difference(&proposed).collect();
+    if removed.is_empty()
+        || removed.iter().any(|path| !obsolete_development_selection(path))
+        || proposed.iter().any(|path| !inventory.contains_key(path))
+    {
+        return Ok(None);
+    }
+    let mut candidate = skill.clone();
+    candidate["runtimeFiles"] = json!(proposed);
+    candidate["runtimeConfirmed"] = json!(false);
+    if let Some(item) = item {
+        candidate["catalogMetadata"] = item.clone();
+    }
+    // Invalidate only observations, never installation history.
+    let candidate_scope = paths(&candidate["runtimeFiles"]);
+    association::reset_observation(&mut candidate, &candidate_scope);
+    candidate["runtimeAudit"] = Value::Null;
+    crate::audit::refresh_local_audit(&mut candidate, Some(&inventory));
+    if candidate["runtimeAudit"]["status"] != "passed"
+        || candidate["runtimeAudit"]["canAutoConfirm"] != true
+        || candidate["runtimeConfirmed"] != true
+    {
+        return Ok(None);
+    }
+    let verified = verify(&candidate)?;
+    if !verified.can_adopt
+        || verified.local != verified.remote
+        || verified.all != inventory
+        || current_hashes(&candidate)? != inventory
+    {
+        return Ok(None);
+    }
+    candidate["runtimeConfirmationKind"] = json!("automatic");
+    Ok(Some((candidate, verified)))
+}
+
 fn refresh_skill(skill: &mut Value, snap: &Snapshot) -> Result<(), String> {
-    refresh_declared_local_version(skill);
-    let verified = verify_skill(skill, snap)?;
-    local::invalidate_runtime_audit(skill, &verified.all);
-    crate::audit::refresh_local_audit(skill, Some(&verified.all));
-    record_verification(skill, &snap.commit, snap.private, verified);
+    let (manifest, item) = manifests(snap, remote_path(skill)?)?;
+    let repair = rebuilt_automatic_scope(skill, manifest.as_deref(), item.as_ref(), |candidate| {
+        verify_skill(candidate, snap)
+    })?;
+    let (mut next, verified) = match repair {
+        Some(repaired) => repaired,
+        None => (skill.clone(), verify_skill(skill, snap)?),
+    };
+    refresh_declared_local_version(&mut next);
+    if let Some(item) = &verified.item {
+        next["catalogMetadata"] = item.clone();
+    }
+    local::invalidate_runtime_audit(&mut next, &verified.all);
+    crate::audit::refresh_local_audit(&mut next, Some(&verified.all));
+    record_verification(&mut next, &snap.commit, snap.private, verified);
+    *skill = next;
     Ok(())
 }
 
@@ -1436,7 +1516,8 @@ fn check_fingerprint(source: &Value, skills: &[Value]) -> Result<String, String>
     Ok(hash(
         &serde_json::to_vec(&json!({
             "roots":source_roots(source, skills)?,"ignored":ignored_paths(source)?,
-            "repo":source["repo"],"branch":source["branch"],"candidates":candidates
+            "repo":source["repo"],"branch":source["branch"],"candidates":candidates,
+            "runtimeAnalyzerVersion":local::RUNTIME_ANALYZER_VERSION
         }))
         .map_err(|e| e.to_string())?,
     ))
@@ -1535,34 +1616,54 @@ pub(crate) fn check(m: &mut Manager, req: &Value) -> Result<Value, String> {
         .iter()
         .filter(|skill| !skill["error"].is_null())
         .count();
-    let attention = m
-        .state
-        .skills
-        .iter()
-        .filter(|skill| {
-            !skill["error"].is_null()
-                || matches!(
-                    skill["status"].as_str(),
-                    Some(
-                        "remote_updated"
-                            | "local_modified"
-                            | "both_modified"
-                            | "unknown_baseline"
-                            | "docs_updated"
-                    )
-                )
-                || skill["runtimeAudit"]["status"] == "needs_review"
-                || skill["associationPending"] == true
-        })
-        .count();
+    let attention = attention_count(&m.state.skills);
     let association_pending = m
         .state
         .skills
         .iter()
         .filter(|skill| skill["associationPending"] == true)
         .count();
-    result["checkSummary"] = json!({"newRemote":new_remote,"associated":associated,"associationPending":association_pending,"needsAttention":attention,"errors":errors});
+    let docs_updated = documentation_updates(&before, &m.state.skills);
+    result["checkSummary"] = json!({"newRemote":new_remote,"associated":associated,"associationPending":association_pending,"needsAttention":attention,"errors":errors,"docsUpdated":docs_updated});
     Ok(result)
+}
+
+fn documentation_updates(before: &[Value], current: &[Value]) -> usize {
+    current.iter().filter(|skill| {
+        skill["status"] == "docs_updated"
+            && skill["error"].is_null()
+            && skill["remoteCheckRequired"] != true
+            && skill["remoteDocHash"].is_string()
+            && before.iter().any(|old| old["id"] == skill["id"]
+                && old["remoteDocHash"].is_string()
+                && old["remoteDocHash"] != skill["remoteDocHash"]
+                && ["sourceId", "repo", "branch", "remotePath"].iter()
+                    .all(|field| old[*field] == skill[*field]))
+    }).count()
+}
+
+fn skill_needs_attention(skill: &Value) -> bool {
+    let runtime_attention = match skill.get("runtimeIssues") {
+        Some(Value::Array(issues)) => issues.iter().any(|issue| {
+            issue["severity"] != "info"
+                && matches!(issue["category"].as_str(), Some("package_required" | "uncertain"))
+        }),
+        Some(_) => false,
+        None => skill["runtimeWarnings"].as_array().is_some_and(|warnings| !warnings.is_empty()),
+    };
+    !skill["error"].is_null()
+        || skill["remoteMissing"] == true
+        || skill["remoteCheckRequired"] == true
+        || matches!(skill["status"].as_str(), Some("remote_updated" | "local_modified" | "both_modified" | "unknown_baseline" | "local_extra" | "remote_missing" | "remote_check_required" | "error"))
+        || skill["localNotice"].as_str().is_some_and(|notice| !notice.is_empty())
+        || skill["untrackedFiles"].as_array().is_some_and(|files| !files.is_empty())
+        || runtime_attention
+        || matches!(skill["runtimeAudit"]["status"].as_str(), Some("needs_review" | "failed"))
+        || skill["associationPending"] == true
+}
+
+fn attention_count(skills: &[Value]) -> usize {
+    skills.iter().filter(|skill| skill_needs_attention(skill)).count()
 }
 fn refresh_matches(selected: &Option<BTreeSet<String>>, skill: &Value) -> bool {
     selected
@@ -2677,6 +2778,112 @@ mod discovery_tests {
 mod association_behavior_tests {
     use super::*;
 
+    fn stale_development_scope() -> (tempfile::TempDir, PathBuf, PathBuf, Value, Vec<String>) {
+        let temp = fixture();
+        let left = package(&temp.path().join("local"), "shared-skill", "Instructions.");
+        let right = package(&temp.path().join("remote"), "shared-skill", "Instructions.");
+        for root in [&left, &right] {
+            fs::create_dir_all(root.join("scripts")).unwrap();
+            for index in 0..20 {
+                fs::write(root.join(format!("scripts/resource-{index}.txt")), "Runtime resource.\n").unwrap();
+            }
+        }
+        let manifest: Vec<_> = local::files(&left).unwrap().into_keys().collect();
+        assert_eq!(manifest.len(), 23);
+        fs::create_dir_all(right.join("scripts/tests")).unwrap();
+        fs::create_dir_all(right.join("scripts/__pycache__")).unwrap();
+        for index in 0..4 {
+            fs::write(right.join(format!("scripts/tests/test_{index}.py")), "# Development only\n").unwrap();
+        }
+        fs::write(right.join("scripts/__pycache__/test.cpython-313.pyc"), b"cache").unwrap();
+        let mut record = local_record(&left, false);
+        record["sourceId"] = json!("source");
+        record["repo"] = json!("fixture/repo");
+        record["remotePath"] = json!("shared-skill");
+        record["runtimeFiles"] = json!(local::files(&right).unwrap().into_keys().collect::<Vec<_>>());
+        record["runtimeAudit"] = json!({"method":"static_package","status":"needs_review","canAutoConfirm":false});
+        record["comparisonScope"] = record["runtimeFiles"].clone();
+        record["status"] = json!("unknown_baseline");
+        assert_eq!(paths(&record["runtimeFiles"]).len(), 28);
+        (temp, left, right, record, manifest)
+    }
+
+    #[test]
+    fn proven_legacy_development_scope_rebuilds_without_changing_files_or_installation_history() {
+        let (_temp, left, right, record, manifest) = stale_development_scope();
+        let before = local::files(&left).unwrap();
+        let original = record.clone();
+        let item = json!({"runtime_files":manifest});
+        let (mut repaired, proof) = rebuilt_automatic_scope(&record, Some(&manifest), Some(&item), |candidate| Ok(verified(candidate, &right))).unwrap().unwrap();
+        record_verification(&mut repaired, "verified-current", true, proof);
+        assert_eq!(paths(&repaired["runtimeFiles"]), manifest);
+        assert_eq!(paths(&repaired["comparisonScope"]).len(), 23);
+        assert_eq!(repaired["runtimeConfirmed"], true);
+        assert_eq!(repaired["runtimeConfirmationKind"], "automatic");
+        assert_eq!(repaired["runtimeAudit"]["status"], "passed");
+        assert_eq!(repaired["status"], "synced");
+        assert!(!skill_needs_attention(&repaired));
+        assert_eq!(repaired["baselineKind"], "comparison");
+        assert!(repaired["installedCommit"].is_null());
+        assert_eq!(record, original);
+        assert_eq!(local::files(&left).unwrap(), before);
+    }
+
+    #[test]
+    fn manual_legacy_confirmed_and_non_development_missing_selections_are_never_shrunk() {
+        let (_temp, _left, _right, record, manifest) = stale_development_scope();
+        for (confirmed, kind) in [(true, Value::Null), (true, json!("manual")), (false, json!("manual"))] {
+            let mut manual = record.clone();
+            manual["runtimeConfirmed"] = json!(confirmed);
+            manual["runtimeConfirmationKind"] = kind;
+            assert!(rebuilt_automatic_scope(&manual, Some(&manifest), None, |_| panic!("manual scope must not be verified as a replacement")).unwrap().is_none());
+        }
+        let mut unknown = record.clone();
+        unknown["runtimeFiles"].as_array_mut().unwrap().push(json!("assets/missing-template.txt"));
+        assert!(rebuilt_automatic_scope(&unknown, Some(&manifest), None, |_| panic!("real missing resources must remain unresolved")).unwrap().is_none());
+    }
+
+    #[test]
+    fn invalid_catalog_real_dependency_network_failure_and_stale_bytes_cannot_commit_scope_repair() {
+        let (_temp, left, right, record, manifest) = stale_development_scope();
+        let original = record.clone();
+        let mut incomplete = manifest.clone();
+        incomplete.push("scripts/missing-runtime.py".into());
+        assert!(rebuilt_automatic_scope(&record, Some(&incomplete), None, |_| panic!("missing catalog entry must not be accepted")).unwrap().is_none());
+        assert!(rebuilt_automatic_scope(&record, Some(&["../outside".into()]), None, |_| panic!("invalid catalog must fail")).is_err());
+        assert!(rebuilt_automatic_scope(&record, Some(&manifest), None, |_| Err("synthetic network failure".into())).is_err());
+        let stale = rebuilt_automatic_scope(&record, Some(&manifest), None, |candidate| {
+            let proof = verified(candidate, &right);
+            fs::write(left.join("scripts/resource-0.txt"), "Concurrent user edit.\n").unwrap();
+            Ok(proof)
+        }).unwrap();
+        assert!(stale.is_none());
+        assert_eq!(record, original);
+        fs::write(left.join("SKILL.md"), "---\nname: shared-skill\n---\nRead `scripts/tests/test_0.py`.\n").unwrap();
+        assert!(rebuilt_automatic_scope(&record, Some(&manifest), None, |_| panic!("a required test is a real dependency, regardless of its folder")).unwrap().is_none());
+    }
+
+    #[test]
+    fn docs_only_results_are_normal_and_summary_counts_only_this_check() {
+        let old = json!({"id":"one","sourceId":"source","repo":"fixture/repo","remotePath":"one","status":"synced","remoteDocHash":"old","error":null});
+        let mut updated = old.clone();
+        updated["status"] = json!("docs_updated");
+        updated["remoteDocHash"] = json!("new");
+        assert!(!skill_needs_attention(&updated));
+        assert_eq!(documentation_updates(std::slice::from_ref(&old), std::slice::from_ref(&updated)), 1);
+        assert_eq!(documentation_updates(std::slice::from_ref(&updated), std::slice::from_ref(&updated)), 0);
+        assert_eq!(documentation_updates(&[], std::slice::from_ref(&updated)), 0);
+        for status in ["local_modified", "remote_updated", "both_modified", "unknown_baseline"] {
+            let mut pending = updated.clone();
+            pending["status"] = json!(status);
+            assert!(skill_needs_attention(&pending));
+        }
+        updated["runtimeAudit"] = json!({"status":"needs_review"});
+        assert!(skill_needs_attention(&updated));
+        updated["error"] = json!("offline");
+        assert_eq!(documentation_updates(&[old], &[updated]), 0);
+    }
+
     fn fixture() -> tempfile::TempDir {
         let parent = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -3326,6 +3533,7 @@ mod association_behavior_tests {
         record_verification(&mut record, "same-runtime", true, checked);
         assert_eq!(record["status"], "local_extra");
         assert_eq!(record["untrackedFiles"], json!(["README.md"]));
+        assert_eq!(attention_count(std::slice::from_ref(&record)), 1);
         assert!(record["changeDetails"].as_array().unwrap().is_empty());
         let mut m = Manager::new(d.path().join("data")).unwrap();
         m.state.sources = vec![json!({"id":"source","error":null})];
@@ -3338,9 +3546,24 @@ mod association_behavior_tests {
         record_verification(&mut record, "documentation-update", true, docs);
         assert_eq!(record["status"], "docs_updated");
         assert_eq!(record["untrackedFiles"], json!(["README.md"]));
+        assert_eq!(attention_count(std::slice::from_ref(&record)), 1, "docs-only refresh does not resolve an independent extra-file decision");
+        let mut docs_only = record.clone();
+        docs_only["untrackedFiles"] = json!([]);
+        docs_only["localNotice"] = Value::Null;
+        assert_eq!(attention_count(std::slice::from_ref(&docs_only)), 0);
+        docs_only["runtimeIssues"] = json!([{"category":"uncertain","severity":"warning"}]);
+        assert_eq!(attention_count(std::slice::from_ref(&docs_only)), 1);
+        docs_only["runtimeIssues"] = json!([{"category":"external","severity":"info"}]);
+        docs_only["runtimeAudit"] = json!({"status":"passed"});
+        assert_eq!(attention_count(std::slice::from_ref(&docs_only)), 0);
+        for status in ["needs_review", "failed"] {
+            docs_only["runtimeAudit"] = json!({"status":status});
+            assert_eq!(attention_count(std::slice::from_ref(&docs_only)), 1, "an unresolved or failed audit remains actionable even if its individual issues are external information");
+        }
         m.upsert_skill(record.clone());
         refresh_local(&mut m, &json!({"skillId":"retained-local"})).unwrap();
         assert_eq!(m.state.skills[0]["status"], "docs_updated");
+        assert_eq!(attention_count(&m.state.skills), 1);
         write_entry(&left, "changed local runtime");
         refresh_local(&mut m, &json!({"skillId":"retained-local"})).unwrap();
         assert_eq!(m.state.skills[0]["status"], "local_modified");
