@@ -1,7 +1,7 @@
 {
   "name": "skill-manager",
   "private": true,
-  "version": "0.2.7",
+  "version": "0.2.10",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
@@ -9,7 +9,7 @@
     "check": "tsc --noEmit",
     "tauri": "tauri",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml --locked",
-    "test:ui": "node --experimental-strip-types --test tests/categories.test.ts tests/changes.test.ts tests/clients.test.ts tests/destination.test.ts tests/export-selection.test.ts tests/external.test.ts tests/folds.test.ts tests/history.test.ts tests/information.test.ts tests/library.test.ts tests/network-diagnostics.test.ts tests/read-cache.test.ts tests/runtime-presentation.test.ts tests/runtime.test.ts tests/shortcut-help.test.ts tests/snapshot-clock.test.ts tests/themes.test.ts tests/workspace.test.ts"
+    "test:ui": "node --experimental-strip-types --test tests/categories.test.ts tests/changes.test.ts tests/clients.test.ts tests/destination.test.ts tests/export-selection.test.ts tests/external.test.ts tests/folds.test.ts tests/history.test.ts tests/information.test.ts tests/library.test.ts tests/network-diagnostics.test.ts tests/read-cache.test.ts tests/runtime-presentation.test.ts tests/runtime.test.ts tests/shortcut-help.test.ts tests/snapshot-clock.test.ts tests/themes.test.ts tests/workspace.test.ts tests/bridge-recovery.test.ts tests/export-recovery-hook.test.ts tests/local-sources.test.ts tests/check-ui.test.ts tests/local-import-ui.test.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
@@ -27,6 +27,7 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^5.0.0",
     "typescript": "~5.9.0",
-    "vite": "^7.0.0"
+    "vite": "^7.0.0",
+    "jsdom": "30.1.3"
   }
 }

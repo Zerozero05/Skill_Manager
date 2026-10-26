@@ -1,6 +1,6 @@
 /* Compact shared layout; existing font, zoom, scroll and task behavior stay authoritative. */
-.desktop-workspace .app-shell>.main{padding-top:1.25rem;scrollbar-gutter:stable}
-.desktop-workspace .page-header{margin-bottom:1.1rem;gap:.75rem}
+.desktop-workspace .app-shell>.main{padding-top:0;scrollbar-gutter:stable}
+.desktop-workspace .page-header{padding-top:1.25rem;margin-bottom:1.1rem;gap:.75rem}
 .desktop-workspace .page-header h1{margin-top:.45rem;margin-bottom:.4rem}
 .desktop-workspace .page-header p{margin:0;line-height:1.65}
 .desktop-workspace .eyebrow{margin-bottom:.3rem}

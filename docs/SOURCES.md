@@ -117,3 +117,17 @@ Read-only source/docs review used the fixed public commits below, together with 
 At the research snapshot: skills-manager 6812 stars/latest commit 10-21/v1.43.0; skillsgate 1405/10-13/desktop-v0.8.1; lcdzzz-skill-admin 2/10-12/v0.0.8; skills-hub 1823/main commit10-16/v1.0.1 (repository pushed10-23); jiweiyeah Skills-Manager1037/latest docs commit09-10/v2.2.0. All five were unarchived and MIT. Activity dates/stars describe only this snapshot, not a maintenance guarantee. Fixed source links above are the implementation evidence.
 
 The supplied GPT image informed dark main #181818, sidebar #1c1a1e and input #363636. The application uses its own semantic light/eye palettes and independent component colors, with actual composed-state contrast verification.
+
+
+<a id="v028-recovery-ci"></a>
+## v0.2.8：恢复与候选构建
+
+- 基于本项目现有选择、租约和窗口协议独立修复，不复制其他管理器代码；生产依赖保持锁定。
+- Tauri事件订阅及窗口生命周期接口：[Tauri 2.12.5源码](https://github.com/tauri-apps/tauri/tree/tauri-v2.12.5/crates/tauri/src)。用于核对监听错误传播，恢复与只读追平由本项目实现。
+- 云端候选上传复用官方 [actions/upload-artifact v7.0.2](https://github.com/actions/upload-artifact/tree/cf430e030ddbb5b0abf93d22962f4752f3646cd9)，固定精确提交、最小读取权限、7天保留；只生成工作流产物，不创建Release或标签。
+
+- 实际React hooks故障回归使用MIT许可的开发测试依赖[jsdom 30.1.3](https://github.com/jsdom/jsdom/releases/tag/v30.1.3)，配合既有ReactDOM与TypeScript；仅测试环境使用，不进入应用运行包。生产依赖锁定版本保持。
+
+## v0.2.9 本地事件与增量检查
+
+- 固定依赖 [notify 8.2.1](https://github.com/notify-rs/notify/tree/notify-8.2.1)：复用 Windows 原生 ReadDirectoryChangesW，项目自行实现防抖、目录授权范围、代际隔离、单调度和空轮次去重。notify 为 CC0-1.0；notify-types 及依赖保留各自许可。没有复制第三方管理器整套代码或改变已有来源规则。

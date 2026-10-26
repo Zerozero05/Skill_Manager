@@ -127,12 +127,14 @@ struct Registry {
     layout: Layout,
     live: BTreeSet<String>,
     closing_windows: BTreeSet<String>,
+    pending_native_close: BTreeSet<String>,
+    close_owners: BTreeMap<String, String>,
+    close_preserves_runtime: bool,
     transfers: BTreeMap<String, Transfer>,
     runtime: BTreeMap<String, Value>,
     export_selections: BTreeMap<String, ExportSelection>,
     export_version: u64,
     close: Option<CloseIntent>,
-    last_focus: Option<Instant>,
 }
 
 fn home_id(label: &str) -> String {
@@ -333,12 +335,14 @@ impl Registry {
             layout,
             live: BTreeSet::new(),
             closing_windows: BTreeSet::new(),
+            pending_native_close: BTreeSet::new(),
+            close_owners: BTreeMap::new(),
+            close_preserves_runtime: false,
             transfers: BTreeMap::new(),
             runtime: BTreeMap::new(),
             export_selections: BTreeMap::new(),
             export_version: 0,
             close: None,
-            last_focus: None,
         })
     }
     fn window(&self, label: &str) -> Result<&WindowRecord, String> {
@@ -447,6 +451,20 @@ impl Registry {
             .insert((label.to_owned(), pane_id), lease.clone());
         let response = json!({"draft":draft,"leaseId":lease});
         Ok((response, created.then(|| self.export_event(&skill))))
+    }
+    fn read_export_selection(&self, label: &str, request: &Value) -> Result<Value, String> {
+        let (skill, pane_id) = self.export_context(label, request, false)?;
+        let draft = self.export_selections.get(&skill);
+        let lease_valid = draft.is_some_and(|draft| {
+            request["draftId"] == draft.id
+                && request["leaseId"].as_str().is_some_and(|lease| {
+                    draft
+                        .participants
+                        .get(&(label.to_owned(), pane_id.clone()))
+                        .is_some_and(|current| current == lease)
+                })
+        });
+        Ok(json!({"draft":draft,"version":self.export_version,"leaseValid":lease_valid}))
     }
     fn update_export_selection(
         &mut self,
@@ -639,7 +657,70 @@ impl Registry {
     fn payload(&self, label: &str) -> Value {
         let mut layout = serde_json::to_value(&self.layout).expect("layout serializable");
         layout["transfers"]=json!(self.transfers.values().map(|t|json!({"id":t.id,"paneId":t.pane_id,"sourceWindowLabel":t.source,"targetWindowLabel":t.target})).collect::<Vec<_>>());
-        json!({"windowLabel":label,"workspace":layout})
+        let close_request = self.close.as_ref().and_then(|close| {
+            (close.labels.contains(label)
+                && !close.acknowledgements.contains(label)
+                && close.error.is_none())
+            .then(|| {
+                json!({"closeId":close.id,"round":close.round,"preserveRuntime":self.close_preserves_runtime})
+            })
+        });
+        let closing = self.closing_windows.contains(label)
+            || self
+                .close
+                .as_ref()
+                .is_some_and(|close| close.labels.contains(label));
+        json!({"windowLabel":label,"workspace":layout,"nativeCloseRequested":self.pending_native_close.contains(label),"closing":closing,"ownedCloseId":self.close_owners.get(label),"closeRequest":close_request})
+    }
+    fn native_close_requested(&mut self, label: &str) -> (bool, bool) {
+        if !self.live.contains(label) || self.window(label).is_err() {
+            return (false, false);
+        }
+        let new_request = !self.closing_windows.contains(label)
+            && self.close.is_none()
+            && self.pending_native_close.insert(label.to_owned());
+        (true, new_request)
+    }
+    fn clear_close(&mut self) {
+        self.close = None;
+        self.closing_windows.clear();
+        self.pending_native_close.clear();
+        self.close_owners.clear();
+        self.close_preserves_runtime = false;
+    }
+    fn cancel_close_id(&mut self, close_id: &str) -> bool {
+        if !self
+            .close
+            .as_ref()
+            .is_some_and(|close| close.id == close_id)
+        {
+            return false;
+        }
+        self.clear_close();
+        true
+    }
+    fn cancel_native_close(&mut self, label: &str) -> bool {
+        if self.close.is_some()
+            || self.closing_windows.contains(label)
+            || self.close_owners.contains_key(label)
+        {
+            return false;
+        }
+        self.pending_native_close.remove(label)
+    }
+    // Only the window which created an intent can cancel it. Local closes must
+    // not reset another window's handshake or the process-wide task barrier.
+    fn cancel_owned_close(&mut self, label: &str, close_id: &str) -> Option<bool> {
+        if self.close_owners.get(label).map(String::as_str) != Some(close_id) {
+            return None;
+        }
+        if self.close.is_some() {
+            return self.cancel_close_id(close_id).then_some(true);
+        }
+        self.close_owners.remove(label);
+        self.closing_windows.remove(label);
+        self.pending_native_close.remove(label);
+        Some(false)
     }
     fn restore(&self) -> Value {
         serde_json::to_value(&self.layout).expect("layout serializable")
@@ -819,6 +900,8 @@ impl WorkspaceSystem {
         if let Ok(mut r) = self.registry.lock() {
             r.live.remove(label);
             r.closing_windows.remove(label);
+            r.pending_native_close.remove(label);
+            r.close_owners.remove(label);
             let quitting = r
                 .close
                 .as_ref()
@@ -836,47 +919,21 @@ impl WorkspaceSystem {
         }
         self.emit(app);
     }
-    fn schedule(self: &Arc<Self>) {
-        if self.started.swap(true, Ordering::SeqCst) {
-            return;
+    pub(crate) fn native_close_requested(&self, app: &tauri::AppHandle, label: &str) -> bool {
+        let (prevent, new_request) = self
+            .registry
+            .lock()
+            .map(|mut registry| registry.native_close_requested(label))
+            .unwrap_or((true, false));
+        if new_request {
+            let _ = app.emit_to(label, "workspace-native-close-request", json!({}));
         }
-        let _ = self.service.background(
-            json!({"action":"refresh","localOnly":true}),
-            "正在刷新本地文件",
-            crate::dispatch,
-        );
-        let _ = self.service.background(
-            json!({"action":"refresh_clients"}),
-            "正在发现客户端连接",
-            crate::dispatch,
-        );
-        let audit = self.service.background(
-            json!({"action":"audit_skills"}),
-            "正在核对运行文件与远端内容",
-            crate::dispatch,
-        );
-        self.service.match_external_background(
-            audit
-                .ok()
-                .and_then(|task| task["id"].as_str().map(str::to_owned)),
-        );
-        let weak = Arc::downgrade(self);
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_secs(30 * 60));
-            let Some(s) = weak.upgrade() else {
-                break;
-            };
-            let refresh = s.service.background(
-                json!({"action":"refresh"}),
-                "正在检查本地与远端变化",
-                crate::dispatch,
-            );
-            s.service.match_external_background(
-                refresh
-                    .ok()
-                    .and_then(|task| task["id"].as_str().map(str::to_owned)),
-            );
-        });
+        prevent
+    }
+    fn schedule(self: &Arc<Self>) {
+        if !self.started.swap(true, Ordering::SeqCst) {
+            crate::checks::start(&self.service);
+        }
     }
     pub(crate) fn inject_origin(&self, label: &str, request: &mut Value) -> Result<(), String> {
         if request["action"] != "start_task" {
@@ -901,6 +958,30 @@ impl WorkspaceSystem {
     }
     fn wait_close_acknowledgements(&self, id: &str, round: &str) -> Result<Vec<String>, String> {
         self.wait_close_until(id, round, Duration::from_secs(30))
+    }
+    fn begin_final_close(
+        &self,
+        id: &str,
+        mut notify: impl FnMut(&str) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let labels = {
+            let mut registry = self.registry.lock().map_err(|_| "Workspace lock failed")?;
+            let close = registry
+                .close
+                .as_mut()
+                .filter(|close| close.id == id)
+                .ok_or("关闭已取消，窗口已保留")?;
+            close.prepared = true;
+            close.round = "final".into();
+            close.acknowledgements.clear();
+            close.labels.iter().cloned().collect::<Vec<_>>()
+        };
+        // The final round is authoritative before notifications are sent.
+        // Broken event delivery leaves it pending for control-snapshot ACKs.
+        for target in labels {
+            let _ = notify(&target);
+        }
+        Ok(())
     }
     fn wait_close_until(
         &self,
@@ -932,15 +1013,18 @@ impl WorkspaceSystem {
                 .0;
         }
     }
-    fn cancel_close(&self, app: &tauri::AppHandle) {
-        if let Ok(mut registry) = self.registry.lock() {
-            registry.close = None;
-            registry.closing_windows.clear();
+    fn cancel_close(&self, app: &tauri::AppHandle, close_id: &str) {
+        let Ok(mut registry) = self.registry.lock() else {
+            return;
+        };
+        if !registry.cancel_close_id(close_id) {
+            return;
         }
-        self.close_wake.notify_all();
         let _ = self
             .service
             .execute(json!({"action":"cancel_close"}), crate::dispatch);
+        drop(registry);
+        self.close_wake.notify_all();
         let _ = app.emit("workspace-close-cancelled", json!({}));
     }
     pub(crate) fn handle(
@@ -957,24 +1041,9 @@ impl WorkspaceSystem {
             self.schedule();
         }
         if action == "workspace_focus" {
-            let run = {
-                let mut r = self.registry.lock().map_err(|_| "Workspace lock failed")?;
-                let run = r
-                    .last_focus
-                    .is_none_or(|t| t.elapsed() >= Duration::from_secs(15));
-                if run {
-                    r.last_focus = Some(Instant::now());
-                }
-                run
-            };
-            if run {
-                let _ = self.service.background(
-                    json!({"action":"refresh","localOnly":true}),
-                    "正在刷新本地文件",
-                    crate::dispatch,
-                );
-            }
-            return Ok(Some(json!({"checked":run})));
+            // A single native watcher owns automatic checks. Focus never
+            // starts another scan, including in manual mode.
+            return Ok(Some(json!({"checked":false})));
         }
         if action == "workspace_detach" || action == "workspace_move" {
             let pane_id = identifier(request, "paneId")?;
@@ -1057,35 +1126,34 @@ impl WorkspaceSystem {
         }
         if action == "workspace_finish_close" {
             let close_id = identifier(request, "closeId")?;
+            if self
+                .registry
+                .lock()
+                .map_err(|_| "Workspace lock failed")?
+                .close_owners
+                .get(label)
+                != Some(&close_id)
+            {
+                return Err("当前窗口不拥有此关闭请求".into());
+            }
             let outcome = (|| -> Result<Vec<String>, String> {
-                let labels = self.wait_close_acknowledgements(&close_id, "initial")?;
+                self.wait_close_acknowledgements(&close_id, "initial")?;
                 self.service
                     .execute(json!({"action":"prepare_close"}), crate::dispatch)?;
-                {
-                    let mut registry = self.registry.lock().map_err(|_| "Workspace lock failed")?;
-                    let close = registry
-                        .close
-                        .as_mut()
-                        .filter(|close| close.id == close_id)
-                        .ok_or("关闭已取消，窗口已保留")?;
-                    close.prepared = true;
-                    close.round = "final".into();
-                    close.acknowledgements.clear();
-                }
-                for target in &labels {
+                self.begin_final_close(&close_id, |target| {
                     app.emit_to(
-                        target.as_str(),
+                        target,
                         "workspace-close-request",
                         json!({"closeId":close_id,"round":"final","preserveRuntime":request["storagePreviewId"].is_string()}),
                     )
-                    .map_err(|e| e.to_string())?;
-                }
+                    .map_err(|error| error.to_string())
+                })?;
                 self.wait_close_acknowledgements(&close_id, "final")
             })();
             let labels = match outcome {
                 Ok(labels) => labels,
                 Err(error) => {
-                    self.cancel_close(app);
+                    self.cancel_close(app, &close_id);
                     return Err(error);
                 }
             };
@@ -1096,7 +1164,7 @@ impl WorkspaceSystem {
             for target in labels {
                 if let Some(window) = app.get_webview_window(&target) {
                     if let Err(error) = window.destroy() {
-                        self.cancel_close(app);
+                        self.cancel_close(app, &close_id);
                         self.migrating.store(false, Ordering::SeqCst);
                         return Err(error.to_string());
                     }
@@ -1113,7 +1181,7 @@ impl WorkspaceSystem {
                 if let Err(error) = result {
                     let _ = self.service.storage()?.rollback_pending();
                     let _ = self.service.storage()?.record_failure(&error);
-                    self.cancel_close(app);
+                    self.cancel_close(app, &close_id);
                     let restored = self.restore_windows(app);
                     self.migrating.store(false, Ordering::SeqCst);
                     return Err(format!(
@@ -1146,11 +1214,15 @@ impl WorkspaceSystem {
         if matches!(
             action,
             "workspace_get_export_selection"
+                | "workspace_read_export_selection"
                 | "workspace_update_export_selection"
                 | "workspace_release_export_selection"
         ) {
             let (response, event) = match action {
                 "workspace_get_export_selection" => r.get_export_selection(label, request)?,
+                "workspace_read_export_selection" => {
+                    (r.read_export_selection(label, request)?, None)
+                }
                 "workspace_update_export_selection" => r.update_export_selection(label, request)?,
                 _ if self.migrating.load(Ordering::SeqCst) => {
                     (json!({"released":false,"ignored":true}), None)
@@ -1429,7 +1501,10 @@ impl WorkspaceSystem {
                 }
                 let (final_close, labels) = r.close_labels(label, all);
                 r.closing_windows.insert(label.to_owned());
+                r.pending_native_close.remove(label);
+                r.close_preserves_runtime = request["storageMigration"] == true;
                 let id = uuid::Uuid::new_v4().to_string();
+                r.close_owners.insert(label.to_owned(), id.clone());
                 let pending: Vec<_> = labels
                     .iter()
                     .filter(|w| w.as_str() != label)
@@ -1484,14 +1559,26 @@ impl WorkspaceSystem {
                 json!({"ready":close.acknowledgements==close.labels,"round":close.round,"pendingWindowLabels":close.labels.difference(&close.acknowledgements).cloned().collect::<Vec<_>>(),"error":close.error})
             }
             "workspace_cancel_close" => {
-                r.close = None;
-                r.closing_windows.clear();
-                self.close_wake.notify_all();
-                let _ = self
-                    .service
-                    .execute(json!({"action":"cancel_close"}), crate::dispatch);
-                let _ = app.emit("workspace-close-cancelled", json!({}));
-                json!({"ready":true})
+                if request["nativeOnly"] == true {
+                    // A failed first flush has no intent ID. Release only this
+                    // caller's pending native request, never a started close.
+                    let cancelled = r.cancel_native_close(label);
+                    return Ok(Some(json!({"ready":cancelled,"ignored":!cancelled})));
+                }
+                let id = identifier(request, "closeId")?;
+                let cancelled = r.cancel_owned_close(label, &id);
+                if let Some(global) = cancelled {
+                    self.close_wake.notify_all();
+                    if global {
+                        let _ = self
+                            .service
+                            .execute(json!({"action":"cancel_close"}), crate::dispatch);
+                        let _ = app.emit("workspace-close-cancelled", json!({}));
+                    } else {
+                        let _ = app.emit_to(label, "workspace-close-cancelled", json!({}));
+                    }
+                }
+                json!({"ready":cancelled.is_some(),"ignored":cancelled.is_none()})
             }
             _ => return Err("Unknown workspace action".into()),
         };
@@ -1530,6 +1617,191 @@ mod tests {
     }
     fn selection_change(pane_id: &str, attached: &Value, operation: &str) -> Value {
         json!({"skillId":"skill-one","paneId":pane_id,"draftId":attached["draft"]["id"],"leaseId":attached["leaseId"],"operation":operation})
+    }
+    #[test]
+    fn native_close_waits_for_the_existing_handshake_without_persisting_requests() {
+        let mut r = export_registry();
+        let saved = r.restore();
+        assert_eq!(r.native_close_requested("main"), (false, false));
+        r.live.insert("main".into());
+        assert_eq!(r.native_close_requested("main"), (true, true));
+        assert_eq!(r.native_close_requested("main"), (true, false));
+        assert_eq!(r.pending_native_close.len(), 1);
+        assert_eq!(r.payload("main")["nativeCloseRequested"], true);
+        assert_eq!(r.restore(), saved);
+        r.closing_windows.insert("main".into());
+        r.pending_native_close.clear();
+        assert_eq!(r.native_close_requested("main"), (true, false));
+        assert!(r.pending_native_close.is_empty());
+        assert_eq!(r.payload("main")["closing"], true);
+        r.clear_close();
+        assert_eq!(r.payload("main")["closing"], false);
+        assert_eq!(r.payload("main")["nativeCloseRequested"], false);
+        assert_eq!(r.native_close_requested("main"), (true, true));
+    }
+    #[test]
+    fn another_native_close_during_global_close_cannot_start_or_cancel_another_intent() {
+        let mut r = export_registry();
+        r.layout.windows.push(WindowRecord {
+            label: "workspace-child".into(),
+            panes: vec![home("workspace-child")],
+            active_pane_id: home_id("workspace-child"),
+            bounds: None,
+            split_view: None,
+        });
+        r.live.extend(["main".into(), "workspace-child".into()]);
+        r.close_owners.insert("main".into(), "close-main".into());
+        r.close = Some(CloseIntent {
+            id: "close-main".into(),
+            labels: r.live.clone(),
+            acknowledgements: BTreeSet::new(),
+            error: None,
+            prepared: false,
+            round: "initial".into(),
+        });
+        assert_eq!(r.native_close_requested("workspace-child"), (true, false));
+        assert!(r.pending_native_close.is_empty());
+        assert_eq!(r.cancel_owned_close("workspace-child", "close-main"), None);
+        assert_eq!(r.cancel_owned_close("main", "stale-close"), None);
+        assert!(!r.cancel_close_id("stale-close"));
+        assert_eq!(r.close.as_ref().unwrap().id, "close-main");
+        assert!(r.payload("workspace-child")["ownedCloseId"].is_null());
+        assert_eq!(r.payload("main")["ownedCloseId"], "close-main");
+        assert_eq!(r.cancel_owned_close("main", "close-main"), Some(true));
+        assert!(r.close.is_none());
+        assert!(r.close_owners.is_empty());
+    }
+    #[test]
+    fn local_close_cancel_only_releases_its_owner() {
+        let mut r = export_registry();
+        r.closing_windows
+            .extend(["main".into(), "workspace-child".into()]);
+        r.close_owners.extend([
+            ("main".into(), "close-main".into()),
+            ("workspace-child".into(), "close-child".into()),
+        ]);
+        assert_eq!(r.cancel_owned_close("main", "close-child"), None);
+        assert_eq!(r.cancel_owned_close("main", "close-main"), Some(false));
+        assert!(!r.closing_windows.contains("main"));
+        assert!(r.closing_windows.contains("workspace-child"));
+        assert_eq!(
+            r.close_owners.get("workspace-child").unwrap(),
+            "close-child"
+        );
+    }
+    #[test]
+    fn failed_initial_flush_releases_only_its_unstarted_native_request() {
+        let mut r = export_registry();
+        r.live.insert("main".into());
+        assert_eq!(r.native_close_requested("main"), (true, true));
+        r.pending_native_close.insert("workspace-child".into());
+        assert!(r.cancel_native_close("main"));
+        assert!(!r.pending_native_close.contains("main"));
+        assert!(r.pending_native_close.contains("workspace-child"));
+        assert_eq!(r.native_close_requested("main"), (true, true));
+        r.close_owners.insert("main".into(), "close-main".into());
+        assert!(!r.cancel_native_close("main"));
+        r.close_owners.clear();
+        r.closing_windows.insert("main".into());
+        assert!(!r.cancel_native_close("main"));
+        r.closing_windows.clear();
+        r.close = Some(CloseIntent {
+            id: "another-close".into(),
+            labels: BTreeSet::from(["workspace-child".into()]),
+            acknowledgements: BTreeSet::new(),
+            error: None,
+            prepared: false,
+            round: "initial".into(),
+        });
+        assert!(!r.cancel_native_close("main"));
+        assert_eq!(r.close.as_ref().unwrap().id, "another-close");
+        assert!(r.pending_native_close.contains("main"));
+    }
+    #[test]
+    fn close_snapshots_recover_only_the_unacknowledged_round_and_cancel_cleanly() {
+        let mut r = export_registry();
+        r.close_preserves_runtime = true;
+        r.close = Some(CloseIntent {
+            id: "close-snapshot".into(),
+            labels: BTreeSet::from(["main".into(), "workspace-child".into()]),
+            acknowledgements: BTreeSet::from(["main".into()]),
+            error: None,
+            prepared: false,
+            round: "initial".into(),
+        });
+        assert!(r.payload("main")["closeRequest"].is_null());
+        let child = r.payload("workspace-child");
+        assert_eq!(child["closeRequest"]["round"], "initial");
+        assert_eq!(child["closeRequest"]["preserveRuntime"], true);
+        assert_eq!(child["closing"], true);
+        let close = r.close.as_mut().unwrap();
+        close.round = "final".into();
+        close.acknowledgements.clear();
+        assert_eq!(r.payload("main")["closeRequest"]["round"], "final");
+        assert_eq!(child["closeRequest"]["round"], "initial");
+        r.close.as_mut().unwrap().error = Some("synthetic save failure".into());
+        assert!(r.payload("main")["closeRequest"].is_null());
+        assert_eq!(r.payload("main")["closing"], true);
+        r.clear_close();
+        let cancelled = r.payload("workspace-child");
+        assert!(cancelled["closeRequest"].is_null());
+        assert_eq!(cancelled["closing"], false);
+        assert!(!r.close_preserves_runtime);
+    }
+    #[test]
+    fn workspace_export_peek_does_not_create_a_draft_or_rotate_any_lease() {
+        let mut r = export_registry();
+        let empty = r
+            .read_export_selection("main", &selection_request("detail-one"))
+            .unwrap();
+        assert!(empty["draft"].is_null());
+        assert_eq!(empty["leaseValid"], false);
+        assert!(r.export_selections.is_empty());
+        assert_eq!(r.export_version, 0);
+        let (attached, _) = r
+            .get_export_selection("main", &selection_request("detail-one"))
+            .unwrap();
+        let request = selection_change("detail-one", &attached, "toggle");
+        let participants = r.export_selections["skill-one"].participants.clone();
+        let version = r.export_version;
+        for _ in 0..3 {
+            let reply = r.read_export_selection("main", &request).unwrap();
+            assert_eq!(reply["draft"], attached["draft"]);
+            assert_eq!(reply["leaseValid"], true);
+            assert_eq!(reply["version"], version);
+            assert_eq!(r.export_selections["skill-one"].participants, participants);
+        }
+        assert_eq!(r.export_version, version);
+        let mut stale = request.clone();
+        stale["leaseId"] = json!("expired");
+        assert_eq!(
+            r.read_export_selection("main", &stale).unwrap()["leaseValid"],
+            false
+        );
+        assert_eq!(r.export_selections["skill-one"].participants, participants);
+        assert!(r.read_export_selection("another-window", &request).is_err());
+        stale["skillId"] = json!("different-skill");
+        assert!(r.read_export_selection("main", &stale).is_err());
+    }
+    #[test]
+    fn workspace_export_peek_observes_another_pane_without_overwriting_choices() {
+        let mut r = export_registry();
+        let (first, _) = r
+            .get_export_selection("main", &selection_request("detail-one"))
+            .unwrap();
+        let (second, _) = r
+            .get_export_selection("main", &selection_request("export-one"))
+            .unwrap();
+        let mut update = selection_change("export-one", &second, "toggle");
+        update["resourceId"] = json!("file:README.md");
+        update["included"] = json!(true);
+        r.update_export_selection("main", &update).unwrap();
+        let peek = selection_change("detail-one", &first, "toggle");
+        let reply = r.read_export_selection("main", &peek).unwrap();
+        assert_eq!(reply["draft"]["selectedIds"], json!(["file:README.md"]));
+        assert_eq!(reply["leaseValid"], true);
+        assert_eq!(reply["version"], r.export_version);
+        assert_eq!(r.export_selections["skill-one"].participants.len(), 2);
     }
     #[test]
     fn workspace_export_atomic_toggle_shares_both_panes_and_windows() {
@@ -1925,6 +2197,99 @@ mod tests {
         assert!(workspace
             .wait_close_until("close-1", "final", Duration::from_millis(1))
             .is_ok());
+    }
+    #[test]
+    fn failed_final_notifications_remain_readable_and_require_all_window_acks() {
+        let (_dir, workspace) = fixture();
+        {
+            let mut r = workspace.registry.lock().unwrap();
+            r.close = Some(CloseIntent {
+                id: "close-final-delivery".into(),
+                labels: BTreeSet::from(["main".into(), "workspace-child".into()]),
+                acknowledgements: BTreeSet::from(["main".into(), "workspace-child".into()]),
+                error: None,
+                prepared: false,
+                round: "initial".into(),
+            });
+        }
+        let mut attempted = Vec::new();
+        workspace
+            .begin_final_close("close-final-delivery", |target| {
+                attempted.push(target.to_owned());
+                Err("runtime error: failed to send message to the webview".into())
+            })
+            .unwrap();
+        assert_eq!(attempted, vec!["main", "workspace-child"]);
+        {
+            let r = workspace.registry.lock().unwrap();
+            for label in ["main", "workspace-child"] {
+                let control = r.payload(label);
+                assert_eq!(control["closeRequest"]["closeId"], "close-final-delivery");
+                assert_eq!(control["closeRequest"]["round"], "final");
+                assert_eq!(control["closing"], true);
+            }
+            assert!(r.close.as_ref().unwrap().prepared);
+            assert!(r.close.as_ref().unwrap().error.is_none());
+        }
+        assert!(workspace
+            .wait_close_until("close-final-delivery", "final", Duration::from_millis(1))
+            .is_err());
+        {
+            let mut r = workspace.registry.lock().unwrap();
+            r.close
+                .as_mut()
+                .unwrap()
+                .acknowledgements
+                .insert("main".into());
+        }
+        assert!(workspace
+            .wait_close_until("close-final-delivery", "final", Duration::from_millis(1))
+            .is_err());
+        {
+            let mut r = workspace.registry.lock().unwrap();
+            r.close
+                .as_mut()
+                .unwrap()
+                .acknowledgements
+                .insert("workspace-child".into());
+        }
+        assert_eq!(
+            workspace
+                .wait_close_until("close-final-delivery", "final", Duration::from_millis(1))
+                .unwrap(),
+            vec!["main", "workspace-child"]
+        );
+    }
+    #[test]
+    fn navigation_save_without_native_bounds_persists_panes_and_preserves_existing_geometry() {
+        let (dir, workspace) = fixture();
+        let previous_bounds =
+            json!({"x":40.0,"y":60.0,"width":1180.0,"height":820.0,"maximized":false});
+        {
+            let mut r = workspace.registry.lock().unwrap();
+            r.window_mut("main").unwrap().bounds = Some(previous_bounds.clone());
+            r.replace_window(
+                "main",
+                &json!({
+                    "panes":[home("main"),{"id":"detail-bounds","kind":"detail","skillId":"skill-one","state":{"section":"files","scrollTop":144}}],
+                    "activePaneId":"detail-bounds"
+                }),
+            )
+            .unwrap();
+            workspace.persist(&mut r).unwrap();
+            assert_eq!(
+                r.window("main").unwrap().bounds,
+                Some(previous_bounds.clone())
+            );
+        }
+        let db = rusqlite::Connection::open(dir.path().join("manager.sqlite3")).unwrap();
+        let stored: String = db
+            .query_row("SELECT payload FROM workspace_state", [], |row| row.get(0))
+            .unwrap();
+        let saved: Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(saved["windows"][0]["bounds"], previous_bounds);
+        assert_eq!(saved["windows"][0]["activePaneId"], "detail-bounds");
+        assert_eq!(saved["windows"][0]["panes"][1]["state"]["scrollTop"], 144.0);
     }
     #[test]
     fn simultaneous_window_close_reserves_the_first_and_last_still_prepares_global_tasks() {

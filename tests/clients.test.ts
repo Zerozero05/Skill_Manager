@@ -100,3 +100,20 @@ test('actual connection disclosure keeps path and fixed-label toggle in a single
   assert.equal((html.match(/class="client-source"/g) || []).length, 1);
   assert.match(html, /<\/summary><dl class="info-grid compact">/);
 });
+
+test('actual client header keeps switching and search together while entry information stays collapsed', async () => {
+  const { ClientPanel } = await actualClientPanel();
+  const html = renderToStaticMarkup(createElement(ClientPanel, {
+    skills, connections: [connection()], client: 'codex', onClientChange: () => {}, onCheck: async () => {},
+  }));
+  const header = html.match(/<header class="client-panel-header"[^>]*data-pane-sticky[^>]*>(.*?)<\/header>/s)?.[1];
+  assert(header, 'One sticky header owns client switching, search and connection actions');
+  assert.match(header, /role="tablist" aria-label="客户端"/);
+  assert.match(header, /aria-label="搜索客户端连接"/);
+  assert.match(header, /检查连接/);
+  assert.match(header, /连接 Skill/);
+  assert.match(header, /<details class="client-entry-info"><summary[^>]*aria-label="查看 Codex 入口信息"/);
+  assert.match(header, /<code>~\/\.agents\/skills<\/code>/);
+  assert(!header.includes(' open=""'), 'Entry information does not expand into a permanent header row');
+  assert(!html.includes('client-root-note'), 'The former standalone entry-description row is removed');
+});

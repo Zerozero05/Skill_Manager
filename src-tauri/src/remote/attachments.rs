@@ -135,7 +135,7 @@ pub(crate) fn get_files(m: &mut Manager, req: &Value) -> Result<Value, String> {
         let scope = paths(&result["suggestedFiles"])
             .into_iter()
             .collect::<BTreeSet<_>>();
-        let merged = crate::external::merged_classification(
+        let mut merged = crate::external::merged_classification(
             root.as_deref(),
             &hashes,
             &snap,
@@ -150,6 +150,10 @@ pub(crate) fn get_files(m: &mut Manager, req: &Value) -> Result<Value, String> {
         issues.dedup();
         let external =
             crate::external::inspect_snapshot(&skill, root.as_deref(), &hashes, &issues, &snap);
+        merged.issues = issues;
+        crate::external::apply_resolutions(&mut merged, &external);
+        result["issues"] = json!(merged.issues);
+        result["warnings"] = json!(merged.warnings);
         result["externalDependencies"] = json!(external);
         result["externalSummary"] =
             crate::external::report(&external, &skill["id"])["summary"].clone();
@@ -161,13 +165,14 @@ pub(crate) fn get_files(m: &mut Manager, req: &Value) -> Result<Value, String> {
             .collect::<BTreeMap<_, _>>();
         all.extend(hashes.clone());
         let roots = local::base_required_reasons(&all).into_keys().collect();
-        let minimal = crate::external::merged_classification(
+        let mut minimal = crate::external::merged_classification(
             root.as_deref(),
             &hashes,
             &snap,
             remote_path(&skill)?,
             Some(&roots),
         )?;
+        crate::external::apply_resolutions(&mut minimal, &external);
         result["exportRequiredFiles"] = json!(minimal.required_files);
         result["exportError"] = json!(minimal
             .issues
@@ -385,13 +390,21 @@ pub(crate) fn prepare_export(m: &Manager, req: &Value) -> Result<PreparedExport,
             .collect::<BTreeMap<_, _>>();
         all.extend(expected.clone());
         let roots = local::base_required_reasons(&all).into_keys().collect();
-        let selected = crate::external::merged_classification(
+        let mut selected = crate::external::merged_classification(
             Some(&root),
             &expected,
             snap,
             remote_path(&skill)?,
             Some(&roots),
         )?;
+        let resolved = crate::external::inspect_snapshot(
+            &skill,
+            Some(&root),
+            &expected,
+            &selected.issues,
+            snap,
+        );
+        crate::external::apply_resolutions(&mut selected, &resolved);
         if let Some(issue) = selected
             .issues
             .iter()
@@ -404,7 +417,7 @@ pub(crate) fn prepare_export(m: &Manager, req: &Value) -> Result<PreparedExport,
         }
         selected.required_files
     } else {
-        local::minimal_runtime_files(&root)?
+        local::minimal_runtime_for_skill(&skill, &root, &expected)?
     };
     let (mut data, mut sources) = collect_export(
         &root,

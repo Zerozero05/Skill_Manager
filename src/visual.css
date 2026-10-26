@@ -57,7 +57,6 @@ button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outli
 .desktop-workspace .empty p{line-height:1.85;overflow-wrap:anywhere}
 .desktop-workspace .settings-layout{gap:20px}
 .desktop-workspace .settings-form small{line-height:1.8;font-size:.82rem}
-.desktop-workspace .client-root-note{margin-block:14px}
 .desktop-workspace .client-row-main{gap:8px 14px}
 .desktop-workspace .client-row summary{padding:5px 0;line-height:1.7}
 .desktop-workspace .network-panel .panel-heading{padding:20px 24px}

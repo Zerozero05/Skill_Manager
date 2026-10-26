@@ -1,5 +1,5 @@
 export type RuntimeIssue = {
-  category: 'package_required' | 'external' | 'history' | 'uncertain';
+  category: 'package_required' | 'external' | 'history' | 'uncertain' | 'resolved' | 'command';
   severity: 'error' | 'warning' | 'info';
   source: string;
   target: string;

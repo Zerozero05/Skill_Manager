@@ -11,6 +11,7 @@ use std::path::{Component, Path, PathBuf};
 
 const MAX_TEXT_BYTES: u64 = 1024 * 1024;
 const MAX_SCAN_DEPTH: usize = 32;
+pub(crate) const RUNTIME_ANALYZER_VERSION: u32 = 2;
 
 fn err_path(context: &str, path: &Path, e: impl std::fmt::Display) -> String {
     format!("{context} ({}): {e}", path.display())
@@ -244,7 +245,7 @@ fn scalar(value: &Value) -> Option<String> {
     }
 }
 
-fn managed_path(root: &Path) -> bool {
+pub(crate) fn managed_path(root: &Path) -> bool {
     let parts: Vec<_> = root
         .components()
         .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
@@ -256,7 +257,7 @@ fn managed_path(root: &Path) -> bool {
         .any(|p| p[0] == "plugins" && matches!(p[1].as_str(), "cache" | "marketplaces"))
 }
 
-fn readonly_reason(root: &Path) -> Option<String> {
+pub(crate) fn readonly_reason(root: &Path) -> Option<String> {
     if managed_path(root) {
         return Some(
             "System, application, or plugin-managed skill; inspect without changing its files"
@@ -609,10 +610,85 @@ fn source_context_for_command(text: &str, target: &str) -> String {
         .join("\n")
 }
 
-fn dependency_tokens(text: &str, markdown: bool) -> Vec<DependencyToken> {
+// Quoted destinations are unambiguous and retain spaces/Chinese characters.
+// Bare prose needs a narrower boundary: Chinese conjunctions may immediately
+// follow a completed filename, but must not split Chinese filenames themselves.
+fn prose_path_segments<'a>(value: &'a str, all: &BTreeMap<String, String>) -> Vec<&'a str> {
+    let mut result = Vec::new();
+    let mut rest = value;
+    while !rest.is_empty() {
+        let known = all
+            .keys()
+            .filter(|path| rest.starts_with(path.as_str()))
+            .max_by_key(|path| path.len())
+            .filter(|path| {
+                rest[path.len()..].chars().next().is_none_or(|next| {
+                    !next.is_ascii_alphanumeric() && !matches!(next, '/' | '\\' | '.' | '_' | '-')
+                })
+            });
+        let boundary = known.map(|path| path.len()).or_else(|| {
+            rest.char_indices().find_map(|(position, character)| {
+                if character != '.' {
+                    return None;
+                }
+                [
+                    "md", "mdx", "tex", "txt", "rst", "yaml", "yml", "json", "toml", "py", "ps1",
+                    "sh", "js", "ts", "tsx", "jsx", "html", "css", "svg", "png", "jpg", "jpeg",
+                    "pdf", "csv", "xml", "patch", "ini", "cfg",
+                ]
+                .iter()
+                .filter_map(|extension| {
+                    let end = position + 1 + extension.len();
+                    if !rest[position + 1..].starts_with(extension) || !rest.is_char_boundary(end) {
+                        return None;
+                    }
+                    let tail = &rest[end..];
+                    [
+                        "和", "与", "及", "或", "以", "为", "是", "用于", "作为", "需要",
+                    ]
+                    .iter()
+                    .any(|word| tail.starts_with(word))
+                    .then_some(end)
+                })
+                .max()
+            })
+        });
+        let Some(end) = boundary else {
+            result.push(rest);
+            break;
+        };
+        result.push(&rest[..end]);
+        rest = &rest[end..];
+        // Continue only at another explicit package prefix. Remaining prose
+        // such as “以@@...标记” is not a second path.
+        let next = ["scripts/", "references/", "assets/", "agents/"]
+            .iter()
+            .filter_map(|prefix| rest.find(prefix))
+            .min();
+        match next {
+            Some(position) => rest = &rest[position..],
+            None => break,
+        }
+    }
+    result
+}
+
+fn dependency_tokens(
+    text: &str,
+    markdown: bool,
+    all: &BTreeMap<String, String>,
+) -> Vec<DependencyToken> {
     let visible = without_fenced_examples(text);
     let mut found = BTreeSet::new();
     let mut historical_section: Option<usize> = None;
+    let mut spaced_paths: Vec<_> = all
+        .keys()
+        .filter(|path| {
+            path.chars()
+                .any(|c| c.is_whitespace() || "()[]".contains(c))
+        })
+        .collect();
+    spaced_paths.sort_by_key(|path| std::cmp::Reverse(path.len()));
     for line in visible.lines() {
         let trimmed = line.trim_start();
         let heading = trimmed.chars().take_while(|c| *c == '#').count();
@@ -694,10 +770,11 @@ fn dependency_tokens(text: &str, markdown: bool) -> Vec<DependencyToken> {
         // Markdown destinations (including relative documents outside the usual
         // scripts/references/assets folders). URLs and same-document anchors stay
         // remote documentation rather than runtime dependencies.
+        let mut masked = line.to_owned();
         let mut remaining = if markdown { line } else { "" };
         while let Some(i) = remaining.find("](") {
             remaining = &remaining[i + 2..];
-            let Some(end) = remaining.find(')') else {
+            let Some(end) = markdown_destination_end(remaining) else {
                 break;
             };
             let destination = remaining[..end].trim();
@@ -708,7 +785,7 @@ fn dependency_tokens(text: &str, markdown: bool) -> Vec<DependencyToken> {
                     .next()
                     .unwrap_or("")
             } else {
-                destination.split_whitespace().next().unwrap_or("")
+                destination.split(" \"").next().unwrap_or("")
             };
             let destination = destination.split(['#', '?']).next().unwrap_or("");
             if !destination.is_empty()
@@ -724,10 +801,54 @@ fn dependency_tokens(text: &str, markdown: bool) -> Vec<DependencyToken> {
                         .to_owned(),
                     true,
                 );
+                masked = masked.replace(&remaining[..end], " ");
             }
             remaining = &remaining[end + 1..];
         }
-        let normalized_line = line
+        // Preserve explicit code/quoted filenames as one token, then mask them
+        // so the fallback cannot emit misleading fragments of a spaced path.
+        for quote in ['`', '"', '\''] {
+            let mut offset = 0;
+            while let Some(start) = masked[offset..].find(quote).map(|i| offset + i) {
+                let body = start + quote.len_utf8();
+                let Some(end) = masked[body..].find(quote).map(|i| body + i) else {
+                    break;
+                };
+                let value = masked[body..end].trim().trim_start_matches("./");
+                if absolute_reference(value)
+                    || ["scripts/", "references/", "assets/", "agents/"]
+                        .iter()
+                        .any(|prefix| value.starts_with(prefix))
+                {
+                    add(value.to_owned(), false);
+                    masked.replace_range(start..end + quote.len_utf8(), " ");
+                    offset = start + 1;
+                } else {
+                    offset = end + quote.len_utf8();
+                }
+            }
+        }
+        // Existing bare filenames with spaces/punctuation are still exact
+        // evidence. Match the longest actual package path before fallback
+        // tokenisation; never guess a missing filename from whitespace.
+        for path in &spaced_paths {
+            let positions: Vec<_> = masked
+                .match_indices(path.as_str())
+                .filter_map(|(index, _)| {
+                    let before = masked[..index].chars().next_back();
+                    let after = masked[index + path.len()..].chars().next();
+                    (!before.is_some_and(|c| c.is_ascii_alphanumeric() || "/\\_-".contains(c))
+                        && !after
+                            .is_some_and(|c| c.is_ascii_alphanumeric() || "/\\_.-".contains(c)))
+                    .then_some(index)
+                })
+                .collect();
+            for index in positions.into_iter().rev() {
+                add((*path).clone(), false);
+                masked.replace_range(index..index + path.len(), " ");
+            }
+        }
+        let normalized_line = masked
             .replace("${SKILL_DIR}/", "")
             .replace("${SKILL_ROOT}/", "")
             .replace("{baseDir}/", "");
@@ -758,11 +879,29 @@ fn dependency_tokens(text: &str, markdown: bool) -> Vec<DependencyToken> {
                 || (command && token.contains('.') && script_file(token)))
                 && !token.contains(['*', '$'])
             {
-                add(token.to_owned(), false);
+                for path in prose_path_segments(token, all) {
+                    add(path.to_owned(), false);
+                }
             }
         }
     }
     found.into_iter().collect()
+}
+
+fn markdown_destination_end(value: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut angle = false;
+    for (index, character) in value.char_indices() {
+        match character {
+            '<' if index == 0 => angle = true,
+            '>' if angle => angle = false,
+            '(' if !angle => depth += 1,
+            ')' if !angle && depth == 0 => return Some(index),
+            ')' if !angle => depth -= 1,
+            _ => {}
+        }
+    }
+    None
 }
 
 fn reference_path(parent: &str, target: &str) -> Option<String> {
@@ -1282,7 +1421,7 @@ fn dependency_closure_with_reader(
         );
         let markdown = path.ends_with(".md") || path.ends_with(".mdx");
         let (tokens, dynamic_package) = if prose {
-            (dependency_tokens(&text, markdown), false)
+            (dependency_tokens(&text, markdown, all), false)
         } else if script_file(&path) {
             script_reference_tokens(&text)
         } else {
@@ -1559,6 +1698,71 @@ fn minimal_runtime_files_with_inventory(
     Ok(classification.required_files)
 }
 
+/// The manager's explicit replacement bindings are part of runtime evidence.
+/// Generic format inspection above remains useful without a registered Skill.
+pub(crate) fn minimal_runtime_for_skill(
+    skill: &Value,
+    root: &Path,
+    all: &BTreeMap<String, String>,
+) -> Result<Vec<String>, String> {
+    let roots = base_required_reasons(all).into_keys().collect();
+    let mut classification = runtime_file_selection(root, all, Some(&roots))?;
+    let external = crate::external::inspect_issues(skill, root, all, &classification.issues);
+    crate::external::apply_resolutions(&mut classification, &external);
+    if let Some(issue) = classification
+        .issues
+        .iter()
+        .find(|issue| issue.severity == "error" || issue.category == "uncertain")
+    {
+        return Err(issue_warning(issue));
+    }
+    Ok(classification.required_files)
+}
+
+/// Old composite prose tokens are no longer active references. Keep their
+/// original binding as history rather than silently discarding user evidence.
+pub(crate) fn retire_obsolete_reference_bindings(
+    skill: &mut Value,
+    all: &BTreeMap<String, String>,
+) {
+    let Ok(root) = local_root(skill) else {
+        return;
+    };
+    let Some(bindings) = skill["externalBindings"].as_array() else {
+        return;
+    };
+    let mut active = Vec::new();
+    let mut retired = Vec::new();
+    for binding in bindings {
+        let target = binding["target"].as_str().unwrap_or("");
+        let source = binding["source"].as_str().unwrap_or("");
+        let segments = prose_path_segments(target, all);
+        let obsolete = !all.contains_key(target)
+            && segments.len() > 1
+            && segments.iter().all(|path| all.contains_key(*path))
+            && safe_join(&root, source)
+                .and_then(|path| read_text(&path))
+                .is_ok_and(|text| text.contains(target));
+        if obsolete {
+            let mut entry = binding.clone();
+            entry["retiredAt"] = json!(now());
+            entry["reason"] = json!("旧分析器将连续中文说明误识别为一个路径；已按实际文件重新解析");
+            retired.push(entry);
+        } else {
+            active.push(binding.clone());
+        }
+    }
+    if !retired.is_empty() {
+        let mut history = skill["externalBindingHistory"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        history.extend(retired);
+        skill["externalBindings"] = json!(active);
+        skill["externalBindingHistory"] = json!(history);
+    }
+}
+
 /// Inspect a registered folder without changing its files or shrinking the
 /// existing managed scope. The hashes bind this evidence to the bytes checked.
 pub fn runtime_audit(skill: &Value) -> Result<Value, String> {
@@ -1578,11 +1782,14 @@ pub fn runtime_audit_with_inventory(
         .flatten()
         .filter_map(|path| path.as_str().map(str::to_owned))
         .collect();
-    let classification =
+    let mut classification =
         runtime_file_selection(&root, all, (!preserved.is_empty()).then_some(&preserved))?;
     if files(&root)? != *all {
         return Err("核对期间文件内容发生变化，请重新检查；未保存过期的运行范围证据".into());
     }
+    let raw_issues = classification.issues.clone();
+    let external = crate::external::inspect_issues(skill, &root, all, &raw_issues);
+    crate::external::apply_resolutions(&mut classification, &external);
     let complete = !classification
         .issues
         .iter()
@@ -1599,14 +1806,14 @@ pub fn runtime_audit_with_inventory(
         .filter(|path| !classification.required_files.contains(path))
         .cloned()
         .collect();
-    let external = crate::external::inspect_issues(skill, &root, &hashes, &classification.issues);
     let external_blocked = external
         .iter()
         .any(|item| item.required && item.status != "available");
     Ok(
         json!({"status":if complete && !external_blocked {"passed"} else {"needs_review"},"checkedAt":now(),"method":"static_package",
+        "analyzerVersion":RUNTIME_ANALYZER_VERSION,
         "requiredFiles":classification.required_files,"preservedScope":preserved,"proposedScope":classification.suggested_files,
-        "optionalInScope":optional_in_scope,"scopeHashes":hashes,"inventoryHashes":all,"issues":classification.issues,"warnings":classification.warnings,
+        "optionalInScope":optional_in_scope,"scopeHashes":hashes,"inventoryHashes":all,"issues":classification.issues,"rawIssues":raw_issues,"warnings":classification.warnings,
         "canAutoConfirm":complete,"externalStatus":if external_blocked {"missing_required"} else {"checked"},
         "externalDependencies":external,"invocationStatus":"not_verified"}),
     )
@@ -1630,7 +1837,8 @@ pub fn invalidate_runtime_audit(skill: &mut Value, current: &BTreeMap<String, St
         .flatten()
         .filter_map(|path| path.as_str())
         .collect();
-    let changed = scope != audited
+    let changed = skill["runtimeAudit"]["analyzerVersion"] != RUNTIME_ANALYZER_VERSION
+        || scope != audited
         || scope.iter().any(|path| {
             current.get(*path).map(String::as_str)
                 != skill["runtimeAudit"]["scopeHashes"][*path].as_str()
@@ -2124,6 +2332,13 @@ pub fn handle(m: &mut Manager, req: &Value) -> Result<Option<Value>, String> {
             let previous = m.state.clone();
             for mut value in drafts {
                 let key = path_key(Path::new(value["localPath"].as_str().unwrap_or_default()));
+                let ignored_before = m.state.ignored_local_paths.len();
+                m.state
+                    .ignored_local_paths
+                    .retain(|path| path_key(Path::new(path)) != key);
+                if ignored_before != m.state.ignored_local_paths.len() {
+                    m.state.check_generation += 1;
+                }
                 let exists = m.state.skills.iter().any(|s| {
                     s["localPath"]
                         .as_str()
@@ -2188,15 +2403,16 @@ pub fn handle(m: &mut Manager, req: &Value) -> Result<Option<Value>, String> {
                 .unwrap_or_default()
                 .into_iter()
                 .collect();
-            let classification =
+            let mut classification =
                 runtime_file_selection(&root, &hashes, confirmed.then_some(&existing))?;
+            let external =
+                crate::external::inspect_issues(&skill, &root, &hashes, &classification.issues);
+            crate::external::apply_resolutions(&mut classification, &external);
             let (export_required, export_error) =
-                match minimal_runtime_files_with_inventory(&root, &hashes) {
+                match minimal_runtime_for_skill(&skill, &root, &hashes) {
                     Ok(paths) => (paths, None),
                     Err(error) => (classification.required_files.clone(), Some(error)),
                 };
-            let external =
-                crate::external::inspect_issues(&skill, &root, &hashes, &classification.issues);
             let export_error = export_error.or_else(|| {
                 external
                     .iter()
@@ -2307,6 +2523,19 @@ pub fn handle(m: &mut Manager, req: &Value) -> Result<Option<Value>, String> {
                 );
             }
             let previous = m.state.clone();
+            if let Some(path) = skill["localPath"].as_str() {
+                let path = canonical(Path::new(path)).unwrap_or_else(|_| PathBuf::from(path));
+                let path = readable_path(&path);
+                if !m
+                    .state
+                    .ignored_local_paths
+                    .iter()
+                    .any(|old| path_key(Path::new(old)) == path_key(Path::new(&path)))
+                {
+                    m.state.ignored_local_paths.push(path);
+                    m.state.check_generation += 1;
+                }
+            }
             if let (Some(source_id), Some(remote_path)) =
                 (skill["sourceId"].as_str(), skill["remotePath"].as_str())
             {
@@ -2412,6 +2641,71 @@ mod tests;
 #[cfg(test)]
 mod issue_tests {
     use super::*;
+
+    #[test]
+    fn continuous_chinese_template_sentence_resolves_each_real_file_without_fragments() {
+        let contents = BTreeMap::from([
+            ("SKILL.md", "Read references/tex-output.md。"),
+            (
+                "references/tex-output.md",
+                "assets/model-extract.tex和assets/model-report.tex以@@UPPER_CASE@@标记待填项。",
+            ),
+            ("assets/model-extract.tex", "template one"),
+            ("assets/model-report.tex", "template two"),
+        ]);
+        let all = contents
+            .keys()
+            .map(|path| ((*path).to_owned(), "hash".to_owned()))
+            .collect();
+        let selection =
+            runtime_file_selection_with_reader(&all, None, |path| Ok(contents[path].into()))
+                .unwrap();
+        assert!(selection.issues.is_empty(), "{:?}", selection.issues);
+        for path in ["assets/model-extract.tex", "assets/model-report.tex"] {
+            assert!(selection.required_files.contains(&path.to_owned()));
+        }
+        assert!(!selection
+            .required_files
+            .iter()
+            .any(|path| path.contains("标记") || path.contains("tex和")));
+    }
+
+    #[test]
+    fn chinese_filename_and_explicit_spaced_parenthesized_destinations_are_not_split() {
+        let contents = BTreeMap::from([
+            ("SKILL.md", "Read `assets/模型.tex和说明.md`、[模板](<assets/中文 模板 (最终).tex>) 和 [第二份](assets/另一个 (修订).tex)。\n另见 assets/中文 模板 (最终).tex。"),
+            ("assets/模型.tex和说明.md", "A real Chinese filename."),
+            ("assets/中文 模板 (最终).tex", "template one"),
+            ("assets/另一个 (修订).tex", "template two"),
+        ]);
+        let all = contents
+            .keys()
+            .map(|path| ((*path).to_owned(), "hash".to_owned()))
+            .collect();
+        let selection =
+            runtime_file_selection_with_reader(&all, None, |path| Ok(contents[path].into()))
+                .unwrap();
+        assert!(selection.issues.is_empty(), "{:?}", selection.issues);
+        assert_eq!(selection.required_files.len(), 4);
+        let bare = dependency_tokens("assets/模型.tex和说明.md", false, &all);
+        assert_eq!(bare.len(), 1);
+        assert_eq!(bare[0].target, "assets/模型.tex和说明.md");
+    }
+
+    #[test]
+    fn missing_continuous_paths_still_report_two_specific_missing_resources() {
+        let all = BTreeMap::from([("SKILL.md".to_owned(), "hash".to_owned())]);
+        let selection = runtime_file_selection_with_reader(&all, None, |_| {
+            Ok("assets/one.tex和assets/two.tex以占位符填写。".into())
+        })
+        .unwrap();
+        assert_eq!(selection.issues.len(), 2);
+        for target in ["assets/one.tex", "assets/two.tex"] {
+            assert!(selection.issues.iter().any(|issue| issue.target == target
+                && issue.category == "package_required"
+                && issue.severity == "error"));
+        }
+    }
 
     #[test]
     fn structured_issues_distinguish_missing_package_external_condition_and_history() {

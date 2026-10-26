@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
-import { ChevronDown, ChevronLeft, ChevronRight, Plus, RefreshCw, Search } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Info, Plus, RefreshCw, Search } from 'lucide-react';
 import { CLIENT_MANAGEMENT_COPY, CLIENT_OPTIONS, clientConnectionRows, clientSelectionRange, clientSelectionShortcut, clientSkillName, clientUsageText, selectFilteredClientItems, type ClientConnection, type ClientManagementMode, type ClientSkill, type ConnectionResult } from './client-selection';
 import './clients.css';
 
@@ -15,6 +15,18 @@ type Props = {
 };
 const editable = (target: EventTarget | null) => target instanceof HTMLElement && (target.isContentEditable || target.matches('input:not([type="checkbox"]),textarea,select'));
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+
+function ClientEntryInformation({ name, folder }: { name: string; folder: string }) {
+  const disclosure = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    const outside = (event: PointerEvent) => { if (event.target instanceof Node && !disclosure.current?.contains(event.target)) disclosure.current?.removeAttribute('open'); };
+    document.addEventListener('pointerdown', outside);
+    return () => document.removeEventListener('pointerdown', outside);
+  }, []);
+  return <details ref={disclosure} className="client-entry-info" onKeyDown={event => {
+    if (event.key === 'Escape' && disclosure.current?.open) { event.preventDefault(); event.stopPropagation(); disclosure.current.open = false; disclosure.current.querySelector('summary')?.focus(); }
+  }}><summary className="icon-button" aria-label={`查看 ${name} 入口信息`} title={`查看 ${name} 入口信息`}><Info size={18} aria-hidden="true" /></summary><div className="client-entry-description" role="group" aria-label={`${name} 入口信息`}><strong>{name} 入口</strong><code>{folder}</code><p>接入检查核对目录链接；使用记录由你确认，原文件保留在原目录。</p></div></details>;
+}
 
 function AdvancedConnectionActions({ onIgnore, disabled = false, batch = false }: { onIgnore: () => void; disabled?: boolean; batch?: boolean }) {
   const disclosure = useRef<HTMLDetailsElement>(null);
@@ -53,9 +65,10 @@ export function ClientPanel({ skills, connections, client, onClientChange, onChe
   const check = async () => { setError(''); setChecking(true); try { await onCheck(); } catch (cause) { setError(errorText(cause)); } finally { setChecking(false); } };
   const confirmUsage = async (connection: ClientConnection) => { if (!onConfirmUsage) return; setError(''); setUsagePending(connection.id); try { await onConfirmUsage(connection); setUsageConfirm(''); } catch (cause) { setError(errorText(cause)); } finally { setUsagePending(''); } };
   return <section className="panel client-panel" ref={root}>
-    <div className="client-tabs" role="tablist" aria-label="客户端">{CLIENT_OPTIONS.map(item => <button type="button" key={item.id} role="tab" aria-selected={client === item.id} className={client === item.id ? 'active' : ''} onClick={() => onClientChange(item.id)}>{item.name}<span>{connections.filter(row => row.client === item.id && row.health === 'ready').length}</span></button>)}</div>
-    <div className="client-toolbar"><label className="search-input"><Search size={16} aria-hidden="true" /><input aria-label="搜索客户端连接" placeholder="搜索 Skill 或目录" value={query} onChange={event => { setQuery(event.target.value); setPage(1); }} /></label><label className="client-abnormal"><input type="checkbox" checked={abnormal} onChange={event => { setAbnormal(event.target.checked); setPage(1); }} />仅入口异常</label><button type="button" className="button" disabled={checking} onClick={() => void check()}><RefreshCw size={15} />{checking ? '正在检查…' : '检查连接'}</button><button type="button" className="button primary" disabled={!onOpenConnect} onClick={() => onOpenConnect?.(client)}><Plus size={15} />连接 Skill</button></div>
-    <details className="client-root-note muted"><summary>{current.name} 入口：<code>{current.folder}</code></summary><p>接入检查核对目录链接；使用记录由你确认，原文件保留在原目录。</p></details>
+    <header className="client-panel-header" data-pane-sticky>
+      <div className="client-header-tabs"><div className="client-tabs" role="tablist" aria-label="客户端">{CLIENT_OPTIONS.map(item => <button type="button" key={item.id} role="tab" aria-selected={client === item.id} className={client === item.id ? 'active' : ''} onClick={() => onClientChange(item.id)}>{item.name}<span>{connections.filter(row => row.client === item.id && row.health === 'ready').length}</span></button>)}</div><ClientEntryInformation name={current.name} folder={current.folder} /></div>
+      <div className="client-toolbar"><label className="search-input"><Search size={16} aria-hidden="true" /><input aria-label="搜索客户端连接" placeholder="搜索 Skill 或目录" value={query} onChange={event => { setQuery(event.target.value); setPage(1); }} /></label><label className="client-abnormal"><input type="checkbox" checked={abnormal} onChange={event => { setAbnormal(event.target.checked); setPage(1); }} />仅入口异常</label><button type="button" className="button" disabled={checking} onClick={() => void check()}><RefreshCw size={15} />{checking ? '正在检查…' : '检查连接'}</button><button type="button" className="button primary" disabled={!onOpenConnect} onClick={() => onOpenConnect?.(client)}><Plus size={15} />连接 Skill</button></div>
+    </header>
     {error && <p className="inline-error client-panel-error" role="alert">{error}</p>}
     <div className="client-selection-tools"><button type="button" className="text-button" disabled={!rows.length} onClick={selectAll}>选择当前筛选全部（{rows.length}）</button><button type="button" className="text-button" disabled={!selected.length} onClick={() => { setSelected([]); anchor.current = undefined; }}>清空选择</button><span role="status">已选 {selected.length} 项{hidden > 0 && ` · 筛选外 ${hidden} 项`}</span>{selected.length > 0 && <><button type="button" className="button" disabled={!onManage} title={CLIENT_MANAGEMENT_COPY.disconnect.description} onClick={() => manage(chosen, 'disconnect')}>预览断开所选</button><AdvancedConnectionActions batch disabled={!onManage} onIgnore={() => manage(chosen, 'stop')} /></>}</div>
     <div className="client-rows client-selectable-list" role="group" aria-label="当前筛选客户端连接" tabIndex={0} onKeyDown={listKeys}>{!visible.length && <div className="empty"><h3>{abnormal ? '没有入口异常' : '尚无匹配连接'}</h3><p>可调整筛选，或使用“连接 Skill”添加。</p></div>}{visible.map(connection => {

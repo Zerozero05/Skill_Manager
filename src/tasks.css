@@ -1,14 +1,13 @@
 .client-panel, .network-panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
 .client-panel { overflow: visible; }
-.client-tabs { display: flex; gap: .4rem; padding: .7rem; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.client-tabs { display: flex; gap: .4rem; padding: .7rem; flex-wrap: wrap; }
 .client-tabs button { background: transparent; border: 0; color: var(--muted); padding: .7rem 1rem; border-radius: .5rem; display: flex; gap: .7rem; align-items: center; }
 .client-tabs button.active { background: var(--selected); color: var(--text); }
 .client-tabs span { font-size: .8rem; opacity: .8; }
-.client-toolbar { position: sticky; top: 0; z-index: 4; background: var(--surface); display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; padding: 1rem; border-bottom: 1px solid var(--line); }
+.client-toolbar { display: flex; flex-wrap: wrap; align-items: stretch; gap: .65rem; padding: .75rem 1rem; border-bottom: 1px solid var(--line); }
 .client-toolbar .search-input { flex: 1 1 14rem; min-width: 12rem; display: flex; align-items: center; gap: .5rem; padding: 0 .7rem; border: 1px solid var(--line); border-radius: 7px; background: var(--input); }
 .client-toolbar .search-input input { min-width: 0; flex: 1; border: 0; background: transparent; box-shadow: none; }
 .client-abnormal { display: flex; align-items: center; gap: .4rem; font-size: .85rem; }
-.client-root-note { padding: 0 1rem; line-height: 1.7; font-size: .85rem; overflow-wrap: anywhere; }
 .client-row { padding: .85rem 1rem; border-top: 1px solid var(--line); }
 .client-row-main { display: flex; gap: .7rem; flex-wrap: wrap; align-items: center; }
 .client-source { display: block; width: 100%; font-size: .85rem; overflow-wrap: anywhere; color: var(--muted); }
@@ -35,7 +34,7 @@
 .network-credentials { display: flex; flex-wrap: wrap; gap: 1rem; }
 .network-credentials > label { flex: 1 1 10rem; }
 .network-result { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; background: transparent; margin-bottom: 0; }
-@media (max-width: 720px) { .client-toolbar { position: static; } .client-row-main { gap: .45rem; } }
+@media (max-width: 720px) { .client-row-main { gap: .45rem; } }
 
 
 

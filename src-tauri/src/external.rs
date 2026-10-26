@@ -379,7 +379,14 @@ fn inspect_issues_with_reader(
                 if let Ok(metadata)=metadata {
                     item.kind=Some(if metadata.is_dir(){"directory"}else if metadata.is_file(){"file"}else{"other"}.into());
                     let resolved_key=key(&resolved);
-                    if root_key.as_ref().is_some_and(|root|resolved_key==*root || resolved_key.starts_with(&format!("{root}/"))) {
+                    let source_binding = issue.category=="package_required" && active.is_some()
+                        && root.and_then(|root|local::safe_join(root,&issue.source).ok())
+                            .and_then(|path|fs::canonicalize(path).ok())
+                            .is_some_and(|source|key(&source)==resolved_key);
+                    if source_binding {
+                        item.status="needs_selection".into();item.required=true;item.role="required".into();
+                        item.reason="绑定的是引用说明本身，不能代替缺失的目标文件；请绑定实际资源文件".into();
+                    } else if root_key.as_ref().is_some_and(|root|resolved_key==*root || resolved_key.starts_with(&format!("{root}/"))) {
                         item.reference_kind=if metadata.is_file(){"package_file"}else{"skill_alias"}.into();
                         item.status="available".into(); item.readable=true;item.effective_source=Some("local".into());
                         if metadata.is_file() {
@@ -440,6 +447,67 @@ fn inspect_issues_with_reader(
         if item.status=="available" && item.effective_source.is_none() {item.effective_source=Some("local".into());}
         Some(item)
     }).collect()
+}
+
+/// Package validity, row warnings and export eligibility use the same resolved
+/// reference. An available explicit replacement satisfies a missing literal;
+/// the original scanner result remains evidence in the audit's rawIssues.
+pub(crate) fn apply_resolutions(selection: &mut local::RuntimeFileSelection, items: &[Dependency]) {
+    for issue in &mut selection.issues {
+        if !matches!(issue.category.as_str(), "package_required" | "uncertain") {
+            continue;
+        }
+        let Some(item) = items.iter().find(|item| {
+            item.source == issue.source
+                && item.target == issue.target
+                && item.status == "available"
+                && item.required
+                && !item.binding_stale
+                && item.readable
+                && item.kind.as_deref() == Some("file")
+                && item.package_path.is_some()
+        }) else {
+            continue;
+        };
+        let original = format!("{}：{} → {}", issue.reason, issue.source, issue.target);
+        issue.category = "resolved".into();
+        issue.severity = "info".into();
+        issue.reason = format!(
+            "引用已由核验后的{}文件满足",
+            if item.effective_source.as_deref() == Some("github") {
+                " GitHub "
+            } else {
+                "绑定"
+            }
+        );
+        let resolved = format!("{}：{} → {}", issue.reason, issue.source, issue.target);
+        for warning in &mut selection.warnings {
+            if *warning == original {
+                *warning = resolved.clone();
+            }
+        }
+        if item.reference_kind == "package_file"
+            && item.effective_source.as_deref() == Some("local")
+        {
+            if let Some(path) = &item.package_path {
+                if !selection.required_files.contains(path) {
+                    selection.required_files.push(path.clone());
+                }
+                if !selection.suggested_files.contains(path) {
+                    selection.suggested_files.push(path.clone());
+                }
+                selection.optional_files.retain(|optional| optional != path);
+                selection
+                    .required_reasons
+                    .entry(path.clone())
+                    .or_insert_with(|| format!("满足 {} 的已绑定引用", issue.source));
+            }
+        }
+    }
+    selection.required_files.sort();
+    selection.suggested_files.sort();
+    selection.issues.sort();
+    selection.issues.dedup();
 }
 
 fn binding<'a>(skill: &'a Value, id: &str) -> Option<&'a Value> {
@@ -574,6 +642,16 @@ fn enrich_remote(skill: &Value, items: &mut [Dependency], snap: &Snapshot) {
         }
         let saved = binding(skill, &item.id);
         let explicit = saved.and_then(|value| value["repositoryPath"].as_str());
+        if item.required
+            && explicit
+                .is_some_and(|path| repo_reference(prefix, &item.source).as_deref() == Some(path))
+        {
+            item.status = "needs_selection".into();
+            item.default_included = false;
+            item.remote = json!({"status":"needs_selection","commit":snap.commit});
+            item.reason = "GitHub 绑定指向引用说明本身，不能代替缺失的目标文件".into();
+            continue;
+        }
         let mapped_repo = saved.and_then(|value| value["repo"].as_str());
         if mapped_repo.is_some_and(|repo| {
             !skill["repo"]
@@ -1197,6 +1275,7 @@ fn auto_match(
     }
     if skill["externalBindings"] != json!(original) {
         let previous = m.state.clone();
+        crate::audit::refresh_local_audit(&mut skill, None);
         m.upsert_skill(skill.clone());
         if let Err(error) = m.save() {
             m.state = previous;
@@ -1397,6 +1476,13 @@ pub fn handle(m: &mut Manager, req: &Value) -> Result<Option<Value>, String> {
                 if matches!(role, "required" | "optional") {
                     snap.read_entry(entry)?;
                 }
+                if item.required
+                    && repo_reference(skill["remotePath"].as_str().unwrap_or(""), &item.source)
+                        .as_deref()
+                        == Some(target)
+                {
+                    return Err("引用说明本身不能代替目标资源，请选择实际需要的文件".into());
+                }
                 repository_path = Some(target.to_owned());
                 remote_commit = Some(commit.to_owned());
             } else if let Some(path) = path.as_deref() {
@@ -1406,6 +1492,15 @@ pub fn handle(m: &mut Manager, req: &Value) -> Result<Option<Value>, String> {
                 let canonical = local::canonical(Path::new(path))?;
                 if !canonical.is_file() || private_resource(&canonical) {
                     return Err("只能绑定普通资源文件，不能纳入目录、凭据或机器私有配置".into());
+                }
+                if item.required
+                    && skill["localPath"]
+                        .as_str()
+                        .and_then(|root| local::safe_join(Path::new(root), &item.source).ok())
+                        .and_then(|source| fs::canonicalize(source).ok())
+                        .is_some_and(|source| key(&source) == key(&canonical))
+                {
+                    return Err("引用说明本身不能代替目标资源，请绑定实际需要的文件".into());
                 }
             }
             if matches!(role, "required" | "optional")
@@ -1503,6 +1598,7 @@ pub fn handle(m: &mut Manager, req: &Value) -> Result<Option<Value>, String> {
         }
     }
     if operation != "recheck" && results.iter().any(|result| result["status"] == "success") {
+        crate::audit::refresh_local_audit(&mut skill, None);
         m.upsert_skill(skill.clone());
         if let Err(error) = m.save() {
             m.state = previous;

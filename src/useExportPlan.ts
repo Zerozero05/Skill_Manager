@@ -2,11 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { exportPlanReadKeys, exportPlanView, type ExportPlan, type ExportPlanRead } from './export-selection';
 import { BoundedReadCache, classifyReadFailure } from './read-cache';
+import { bridgeMessage, retryBridgeRead } from './bridge-recovery';
 
 const plans = new BoundedReadCache<ExportPlan>(32, 8 * 1024 * 1024, 2 * 1024 * 1024);
-function load(key: string, args: Record<string, unknown>, cacheable: boolean, force: boolean) {
-  const read = () => invoke<ExportPlan>('manager_request', { request: { action: 'get_export_plan', ...args } });
-  return cacheable ? plans.load(key, read, force) : read();
+function load(key: string, args: Record<string, unknown>, cacheable: boolean, force: boolean, owner: () => boolean) {
+  const read = (active: () => boolean) => retryBridgeRead(() => invoke<ExportPlan>('manager_request', { request: { action: 'get_export_plan', ...args } }), { active });
+  return cacheable ? plans.load(key, read, force, owner) : read(owner);
 }
 
 /** Cached manifests are display data; the existing export action revalidates every source. */
@@ -34,13 +35,13 @@ export function useExportPlan({ skillId, selectedIds, enabled, contentKey, remot
       const retained = exportPlanView(state, key, contextKey, previous, cacheable).plan;
       return { key, contextKey, plan: retained, error: '', complete: false, fromCache: !!retained };
     });
-    void load(cacheKey, { skillId, selectedIds: JSON.parse(selection), ...(remoteCommit ? { remoteCommit } : {}) }, cacheable, manual).then(value => {
+    void load(cacheKey, { skillId, selectedIds: JSON.parse(selection), ...(remoteCommit ? { remoteCommit } : {}) }, cacheable, manual, () => generation.current === sequence).then(value => {
       if (generation.current === sequence) setResult({ key, contextKey, plan: value, error: '', complete: true, fromCache: false });
     }).catch(cause => {
       if (generation.current !== sequence) return;
-      const keep = classifyReadFailure(cause) === 'network';
+      const keep = ['network', 'bridge'].includes(classifyReadFailure(cause));
       if (!keep) plans.delete(cacheKey);
-      setResult(state => ({ key, contextKey, plan: keep && state.contextKey === contextKey ? state.plan : null, error: cause instanceof Error ? cause.message : String(cause), complete: true, fromCache: keep }));
+      setResult(state => ({ key, contextKey, plan: keep && state.contextKey === contextKey ? state.plan : null, error: bridgeMessage(cause), complete: true, fromCache: keep }));
     });
     return () => { if (generation.current === sequence) generation.current++; };
   }, [key, cacheKey, contextKey, skillId, enabled, selection, remoteCommit, refreshIndex, cacheable]);

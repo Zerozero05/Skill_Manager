@@ -5,13 +5,16 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import SessionApp from './App';
 import { useTasks, terminalTask } from './tasks';
 import { WorkspaceShell } from './WorkspaceShell';
+import { CheckControl } from './CheckControl';
 import { createHomePane, localHistoryPane, reorderWorkspacePanes, type WorkspaceNavigation, type WorkspacePane, type ScreenPoint, type PaneTaskBadge } from './workspace';
 import { WorkspaceSessionContext, type PaneFocusNavigation, type SessionBridge, type SessionDraft } from './session';
 import './session.css';
 import { isStaleReadSnapshot } from './snapshot-clock';
+import { acknowledgeCloseRound, bridgeMessage, pendingCloseRound, readCloseBounds, RecoverableSubscription, retryBridgeRead, shouldPollWorkspace } from './bridge-recovery';
 
 type Transfer = { id: string; paneId: string; sourceWindowLabel: string; targetWindowLabel: string };
-type WorkspaceReply = { windowLabel: string; workspace: WorkspaceNavigation };
+type CloseRequest = { closeId: string; round?: string; preserveRuntime?: boolean };
+type WorkspaceReply = { windowLabel: string; workspace: WorkspaceNavigation; nativeCloseRequested?: boolean; closing?: boolean; ownedCloseId?: string | null; closeRequest?: CloseRequest | null };
 const api = <T,>(action: string, args: Record<string, unknown> = {}) => invoke<T>('manager_request', { request: { action, ...args } });
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -30,6 +33,7 @@ export default function WorkspaceApp() {
   const [error, setError] = useState('');
   const [closing, setClosing] = useState(false);
   const closingRef = useRef(false);
+  const updateClosePolling = useRef<() => void>(() => undefined);
   const [showHelp, setShowHelp] = useState(false);
   const ready = useRef(false);
   const mounted = useRef(true);
@@ -80,9 +84,9 @@ export default function WorkspaceApp() {
     managerRevision.current = revision; setManagerSnapshot(next);
   }, []);
   useEffect(() => {
-    const snapshot = managerSnapshot as { connections?: { id: string; path: string; target: string; autoRepairable?: boolean; checkedAt?: string }[] } | undefined;
+    const snapshot = managerSnapshot as { checkMode?: string; connections?: { id: string; path: string; target: string; autoRepairable?: boolean; checkedAt?: string }[] } | undefined;
     const candidates = snapshot?.connections?.filter(connection => connection.autoRepairable) || [];
-    if (!candidates.length || closingRef.current) return;
+    if (!candidates.length || closingRef.current || snapshot?.checkMode === 'manual') return;
     const key = JSON.stringify(candidates.map(connection => [connection.id, connection.path, connection.target]));
     const previous = attemptedClientRepairs.current.get(key);
     if (previous !== undefined && Date.now() - previous < 30 * 60_000) return;
@@ -106,7 +110,7 @@ export default function WorkspaceApp() {
         const transfer = targets.find(item => item.paneId === pane.id);
         const refreshTransfer = transfer && loadedTransfers.current.get(pane.id) !== transfer.id;
         if (loaded.current.has(pane.id) && !refreshTransfer) continue;
-        const result = await api<{ runtime?: SessionDraft }>('workspace_get_pane_runtime', { paneId: pane.id });
+        const result = await retryBridgeRead(() => api<{ runtime?: SessionDraft }>('workspace_get_pane_runtime', { paneId: pane.id }), { active: () => mounted.current });
         values[pane.id] = result.runtime || {}; loaded.current.add(pane.id);
         if (transfer) loadedTransfers.current.set(pane.id, transfer.id);
       }
@@ -117,7 +121,7 @@ export default function WorkspaceApp() {
     return accepting.current;
   }, [label]);
 
-  const refreshState = useCallback(async () => acceptSnapshot(await api('get_state')), [acceptSnapshot]);
+  const refreshState = useCallback(async () => acceptSnapshot(await retryBridgeRead(() => api('get_state'), { active: () => mounted.current })), [acceptSnapshot]);
   useEffect(() => {
     // Credential storage may succeed before a later notification fails. Re-read its opaque
     // generation even on failed tasks, rather than retaining an old display cache context.
@@ -204,25 +208,39 @@ export default function WorkspaceApp() {
     // recreate its WebViews without losing the pages that were just closed.
     if (preserveRuntime) for (const [paneId, bridge] of bridges.current) await api('workspace_set_pane_runtime', { paneId, runtime: bridge.capture() });
     if (isTauri()) {
-      const window = getCurrentWindow(); const scale = await window.scaleFactor(); const position = await window.outerPosition(); const size = await window.innerSize();
+      const window = getCurrentWindow();
+      const bounds = await readCloseBounds(async () => {
+        const scale = await window.scaleFactor(), position = await window.outerPosition(), size = await window.innerSize();
+        return { x: position.x / scale, y: position.y / scale, width: size.width / scale, height: size.height / scale, maximized: await window.isMaximized() };
+      }, { active: () => mounted.current });
       const owner = current.current.windows.find(item => item.label === label);
-      if (owner) await api('workspace_save', { panes: owner.panes.map(pane => { const draft = bridges.current.get(pane.id)?.capture(); return draft ? { ...pane, state: { ...pane.state, scrollTop: draft.scrollTop, outlineExpanded: draft.outlineExpanded, expandedSections: draft.expandedSections } } : pane; }), activePaneId: owner.activePaneId, bounds: { x: position.x / scale, y: position.y / scale, width: size.width / scale, height: size.height / scale, maximized: await window.isMaximized() } });
+      // Omitting bounds preserves the backend's last known position; pane saves still must succeed.
+      if (owner) await api('workspace_save', { panes: owner.panes.map(pane => { const draft = bridges.current.get(pane.id)?.capture(); return draft ? { ...pane, state: { ...pane.state, scrollTop: draft.scrollTop, outlineExpanded: draft.outlineExpanded, expandedSections: draft.expandedSections } } : pane; }), activePaneId: owner.activePaneId, ...(bounds ? { bounds } : {}) });
     }
     return true;
   }, [label]);
   const closeWindow = useCallback(async (all = false, storagePreviewId?: string) => {
     if (closingRef.current) return false;
     closingRef.current = true; setClosing(true);
+    updateClosePolling.current();
+    let ownedCloseId: string | undefined;
     try {
       if (!await flush(!!storagePreviewId)) throw new Error('界面设置未保存，窗口保持打开');
       const result = await api<{ final: boolean; closeId?: string; pendingWindowLabels?: string[] }>('workspace_close_intent', { all, ...(storagePreviewId ? { storageMigration: true } : {}) });
+      ownedCloseId = result.closeId;
       if (!result.final) { await getCurrentWindow().destroy(); return true; }
       // Other windows acknowledge their local drafts before the backend closes the app.
       await api('workspace_finish_close', { closeId: result.closeId, ...(storagePreviewId ? { storagePreviewId } : {}) });
       return true;
     } catch (cause) {
-      await api('workspace_cancel_close').catch(() => undefined);
+      if (!ownedCloseId) {
+        // The intent may have succeeded without its reply. Never cancel another window's close.
+        try { ownedCloseId = (await retryBridgeRead(() => api<WorkspaceReply>('workspace_get'), { active: () => mounted.current })).ownedCloseId || undefined; } catch { /* Keep an unconfirmed close untouched. */ }
+      }
+      if (ownedCloseId) await api('workspace_cancel_close', { closeId: ownedCloseId }).catch(() => undefined);
+      else await api('workspace_cancel_close', { nativeOnly: true }).catch(() => undefined);
       closingRef.current = false; setClosing(false); setError(`窗口暂未关闭：${errorText(cause)}`);
+      updateClosePolling.current();
       return false;
     }
   }, [flush]);
@@ -232,22 +250,107 @@ export default function WorkspaceApp() {
 
   useEffect(() => {
     mounted.current = true; if (!isTauri()) { setError('请在 Skill Manager 桌面程序中打开'); return; }
-    const stops: (() => void)[] = []; let disposed = false;
-    const add = async (promise: Promise<() => void>) => { const stop = await promise; if (disposed) stop(); else stops.push(stop); };
-    void add(listen<WorkspaceNavigation>('workspace-changed', event => { void acceptWorkspace(event.payload); }));
-    void add(listen<{ stateRevision: number }>('state-changed', event => { if (event.payload.stateRevision > managerRevision.current) void refreshState().catch(cause => setError(errorText(cause))); }));
-    void add(listen('read-context-changed', () => { void refreshState().catch(cause => setError(errorText(cause))); }));
-    void add(listen<{ paneId: string }>('workspace-activate', event => { void applyReply(api('workspace_activate', { paneId: event.payload.paneId })); }));
-    void add(listen<{ closeId: string; round?: string; preserveRuntime?: boolean }>('workspace-close-request', event => {
-      closingRef.current = true; setClosing(true);
-      void flush(!!event.payload.preserveRuntime).then(ok => api('workspace_close_ack', { closeId: event.payload.closeId, round: event.payload.round, ok })).catch(cause => api('workspace_close_ack', { closeId: event.payload.closeId, round: event.payload.round, ok: false, error: errorText(cause) }));
-    }));
-    void add(listen('workspace-close-cancelled', () => { closingRef.current = false; setClosing(false); }));
-    void add(getCurrentWindow().onCloseRequested(event => { event.preventDefault(); void closeWindow(); }));
-    void (async () => { await refreshState(); const reply = await api<WorkspaceReply>('workspace_get'); await acceptWorkspace(reply.workspace); if (disposed) return; ready.current = true; if (!((reply.workspace.transfers || []) as Transfer[]).some(item => item.targetWindowLabel === label)) { const result = await api<WorkspaceReply>('workspace_ready'); await acceptWorkspace(result.workspace); } })().catch(cause => setError(errorText(cause)));
-    const focus = () => { if (ready.current && !closingRef.current) void api('workspace_focus').catch(() => undefined); };
-    window.addEventListener('focus', focus);
-    return () => { disposed = true; mounted.current = false; for (const stop of stops) stop(); window.removeEventListener('focus', focus); };
+    let disposed = false, ipcAvailable = true, repeatSnapshot = false;
+    let observedBackendClose = false;
+    const inFlightCloseRounds = new Set<string>();
+    const flushedCloseRounds = new Map<string, { ok: boolean; error?: string }>();
+    let snapshot: Promise<void> | undefined, poll: ReturnType<typeof setInterval> | undefined;
+    const subscriptions: RecoverableSubscription[] = [];
+    const closeSubscriptions = new Set<RecoverableSubscription>();
+    const active = () => !disposed && mounted.current;
+    const stopPolling = () => { if (poll) clearInterval(poll); poll = undefined; };
+    const report = (cause: unknown) => { if (!active()) return; ipcAvailable = false; stopPolling(); setError(bridgeMessage(cause)); };
+    const receiveCloseRequest = (payload: CloseRequest) => {
+      const key = `${payload.closeId}:${payload.round || 'initial'}`;
+      if (!active() || inFlightCloseRounds.has(key)) return;
+      inFlightCloseRounds.add(key);
+      observedBackendClose = true; closingRef.current = true; setClosing(true);
+      updatePolling();
+      void (async () => {
+        const peek = () => api<WorkspaceReply>('workspace_get');
+        const currentClose = await retryBridgeRead(peek, { active });
+        if (!pendingCloseRound(payload, currentClose)) { acceptCloseState(currentClose); return; }
+        let outcome = flushedCloseRounds.get(key);
+        if (!outcome) {
+          try { outcome = { ok: await flush(!!payload.preserveRuntime) }; }
+          catch (cause) { outcome = { ok: false, error: errorText(cause) }; }
+          flushedCloseRounds.set(key, outcome);
+          while (flushedCloseRounds.size > 16) flushedCloseRounds.delete(flushedCloseRounds.keys().next().value!);
+        }
+        const acknowledgement = { closeId: payload.closeId, round: payload.round, ...outcome };
+        // Only this idempotent control ACK may be repeated, after a read of the same pending round.
+        await acknowledgeCloseRound(payload, () => api('workspace_close_ack', acknowledgement), peek, active);
+      })().catch(report).finally(() => { inFlightCloseRounds.delete(key); });
+    };
+    const acceptCloseState = (reply: WorkspaceReply) => {
+      if (reply.closing) { observedBackendClose = true; closingRef.current = true; setClosing(true); }
+      if (reply.closeRequest) receiveCloseRequest(reply.closeRequest);
+      else if (reply.nativeCloseRequested && ready.current && !closingRef.current) void closeWindow();
+      else if (reply.closing === false && observedBackendClose) {
+        observedBackendClose = false; closingRef.current = false; setClosing(false);
+      }
+      updatePolling();
+    };
+    const reconcile = (afterSubscription = false, controlOnly = false): Promise<void> => {
+      if (!active()) return Promise.resolve();
+      if (snapshot) { repeatSnapshot ||= afterSubscription; return snapshot; }
+      snapshot = (async () => {
+        do {
+          repeatSnapshot = false;
+          const lightweight = controlOnly || closingRef.current || document.visibilityState === 'hidden';
+          if (!lightweight && !closingRef.current) await refreshState();
+          const reply = await retryBridgeRead(() => api<WorkspaceReply>('workspace_get'), { active });
+          if (!active()) return;
+          if (!lightweight) await acceptWorkspace(reply.workspace);
+          acceptCloseState(reply);
+          ipcAvailable = true;
+        } while (repeatSnapshot && active());
+      })().finally(() => { snapshot = undefined; });
+      return snapshot;
+    };
+    const updatePolling = () => {
+      const canPoll = () => shouldPollWorkspace({ alive: active(), visible: document.visibilityState !== 'hidden', ipcAvailable, degraded: subscriptions.some(item => !item.connected), closeDegraded: [...closeSubscriptions].some(item => !item.connected), closing: closingRef.current });
+      if (!canPoll()) { stopPolling(); return; }
+      if (!poll) poll = setInterval(() => {
+        if (!canPoll()) { stopPolling(); return; }
+        void reconcile(false, closingRef.current || document.visibilityState === 'hidden').catch(report);
+      }, 2000);
+    };
+    updateClosePolling.current = updatePolling;
+    const add = (register: () => Promise<() => void>, closeControl = false) => {
+      const subscription = new RecoverableSubscription(register, {
+        active,
+        onReady: () => { if (ipcAvailable) void reconcile(true).catch(report); updatePolling(); },
+        onUnavailable: () => updatePolling(),
+      });
+      subscriptions.push(subscription); if (closeControl) closeSubscriptions.add(subscription); void subscription.recover();
+    };
+    add(() => listen<WorkspaceNavigation>('workspace-changed', event => { void acceptWorkspace(event.payload); }));
+    add(() => listen<{ stateRevision: number }>('state-changed', event => { if (event.payload.stateRevision > managerRevision.current) void refreshState().catch(report); }));
+    add(() => listen('read-context-changed', () => { void refreshState().catch(report); }));
+    add(() => listen<{ paneId: string }>('workspace-activate', event => { void applyReply(api('workspace_activate', { paneId: event.payload.paneId })); }));
+    add(() => listen<CloseRequest>('workspace-close-request', event => receiveCloseRequest(event.payload)), true);
+    add(() => listen('workspace-close-cancelled', () => { observedBackendClose = false; closingRef.current = false; setClosing(false); updatePolling(); }), true);
+    add(() => listen('workspace-native-close-request', () => { if (ready.current) void reconcile(true).catch(report); }), true);
+    add(() => getCurrentWindow().onCloseRequested(event => { event.preventDefault(); if (ready.current) void reconcile(true).catch(report); }), true);
+    void reconcile().then(async () => {
+      if (!active()) return;
+      ready.current = true;
+      if (!((current.current.transfers || []) as Transfer[]).some(item => item.targetWindowLabel === label)) {
+        // Registration is a write. A failed acknowledgement is not replayed.
+        const result = await api<WorkspaceReply>('workspace_ready'); await acceptWorkspace(result.workspace);
+      }
+      await reconcile(true);
+    }).catch(report);
+    const focus = () => {
+      if (!active() || document.visibilityState === 'hidden') return;
+      ipcAvailable = true;
+      for (const item of subscriptions) void item.recover();
+      void reconcile(true).then(() => { if (ready.current && !closingRef.current) void api('workspace_focus').catch(() => undefined); updatePolling(); }).catch(report);
+    };
+    const visibilityChanged = () => { updatePolling(); if (document.visibilityState !== 'hidden') focus(); };
+    window.addEventListener('focus', focus); document.addEventListener('visibilitychange', visibilityChanged);
+    return () => { disposed = true; mounted.current = false; stopPolling(); if (updateClosePolling.current === updatePolling) updateClosePolling.current = () => undefined; for (const item of subscriptions) item.dispose(); window.removeEventListener('focus', focus); document.removeEventListener('visibilitychange', visibilityChanged); };
   }, [acceptWorkspace, applyReply, closeWindow, flush, refreshState, label]);
   useEffect(() => {
     const stopEditing = (event: Event) => { if (closingRef.current) { event.preventDefault(); event.stopImmediatePropagation(); } };
@@ -285,7 +388,7 @@ export default function WorkspaceApp() {
   return <div className={`desktop-workspace ${closing ? 'workspace-is-closing' : ''}`}>
     {error && <div className="workspace-error" role="alert"><span>{error}</span><button onClick={() => setError('')}>关闭提示</button></div>}
     {closing && <div className="workspace-closing" role="status">正在保存并等待关键任务完成…</div>}
-    <WorkspaceShell panes={panes} activePaneId={incomingPanes.at(-1)?.id || owner?.activePaneId || panes[0].id} splitView={owner?.splitView} onSplitChange={splitView => { void applyReply(api('workspace_set_split', { splitView: splitView || null })); }} pendingTransfers={pendingTransfers} taskBadges={badges} shortcutsBlocked={closing}
+    <WorkspaceShell panes={panes} activePaneId={incomingPanes.at(-1)?.id || owner?.activePaneId || panes[0].id} splitView={owner?.splitView} onSplitChange={splitView => { void applyReply(api('workspace_set_split', { splitView: splitView || null })); }} pendingTransfers={pendingTransfers} taskBadges={badges} shortcutsBlocked={closing} checkControl={<CheckControl snapshot={managerSnapshot} tasks={tasks} onSnapshot={acceptSnapshot} disabled={closing} />}
       onActivate={id => { void applyReply(api('workspace_activate', { paneId: id })); }} onClose={closePane}
       onReorder={(id, beforeId) => { const window = current.current.windows.find(item => item.label === label); if (window) void applyReply(api('workspace_save', { panes: reorderWorkspacePanes(window.panes, id, beforeId), activePaneId: window.activePaneId, expectedRevision: current.current.revision })); }}
       onDetach={(id, point) => { void movePane(id, point); }} onReturn={label === 'main' ? undefined : id => { void movePane(id, undefined, true); }}

@@ -3,7 +3,7 @@ import { runtimeAttentionCount, uniqueRuntimeIssues, type RuntimeIssue } from '.
 import { unattachedRuntimeIssues, type RuntimeReference } from './runtime-presentation';
 
 export function RuntimeChecks({ issues, warnings, embedded = false, references = [] }: { issues?: RuntimeIssue[]; warnings?: string[]; embedded?: boolean; references?: readonly RuntimeReference[] }) {
-  const checks = unattachedRuntimeIssues(uniqueRuntimeIssues(issues || []), references);
+  const checks = unattachedRuntimeIssues(uniqueRuntimeIssues(issues || []), references).filter(issue => issue.category !== 'resolved');
   const legacy = issues === undefined ? [...new Set(warnings || [])] : [];
   if (!checks.length && !legacy.length) return null;
   const groups = [
