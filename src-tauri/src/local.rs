@@ -11,7 +11,7 @@ use std::path::{Component, Path, PathBuf};
 
 const MAX_TEXT_BYTES: u64 = 1024 * 1024;
 const MAX_SCAN_DEPTH: usize = 32;
-pub(crate) const RUNTIME_ANALYZER_VERSION: u32 = 2;
+pub(crate) const RUNTIME_ANALYZER_VERSION: u32 = 3;
 
 fn err_path(context: &str, path: &Path, e: impl std::fmt::Display) -> String {
     format!("{context} ({}): {e}", path.display())
@@ -1361,6 +1361,35 @@ fn python_local_imports(
     found
 }
 
+// Split an explicit script invocation only at a script filename followed by
+// quoted arguments or an option. Exact filenames (including spaces) win first.
+fn script_command_entry(target: &str, all: &BTreeMap<String, String>) -> Option<String> {
+    if all.contains_key(target) {
+        return None;
+    }
+    let arguments = |rest: &str| {
+        let trimmed = rest.trim_start();
+        trimmed.len() < rest.len()
+            && (matches!(trimmed.chars().next(), Some('\'' | '"')) || trimmed.starts_with('-'))
+    };
+    let known = all
+        .keys()
+        .filter(|path| script_file(path))
+        .filter(|path| target.strip_prefix(path.as_str()).is_some_and(arguments))
+        .max_by_key(|path| path.len());
+    if let Some(path) = known {
+        return Some(path.clone());
+    }
+    let boundary = target.find(char::is_whitespace)?;
+    let entry = &target[..boundary];
+    (script_file(entry)
+        && ["scripts/", "./scripts/"]
+            .iter()
+            .any(|prefix| entry.starts_with(prefix))
+        && arguments(&target[boundary..]))
+    .then(|| entry.to_owned())
+}
+
 fn dependency_closure_with_reader(
     all: &BTreeMap<String, String>,
     selected: &BTreeSet<String>,
@@ -1444,7 +1473,18 @@ fn dependency_closure_with_reader(
             .map(|token| token.target.trim_end_matches('/').to_owned())
             .collect();
         for token in tokens {
-            let target = token.target;
+            let target = if let Some(entry) = script_command_entry(&token.target, all) {
+                issues.insert(RuntimeIssue::new(
+                    "command",
+                    "info",
+                    &path,
+                    &token.target,
+                    "脚本调用的工作目录或参数相对路径已与入口分开核对；参数不是缺失的静态资源",
+                ));
+                entry
+            } else {
+                token.target
+            };
             let markdown = token.relative || !prose;
             if client_command_reference(&target, &source_context_for_command(&text, &target)) {
                 issues.insert(RuntimeIssue::new(

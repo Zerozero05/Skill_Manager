@@ -17,9 +17,19 @@ fn paths(value: &Value) -> BTreeSet<String> {
         .collect()
 }
 
-fn preserves_manual_scope(skill: &Value) -> bool {
+pub(crate) fn preserves_manual_scope(skill: &Value) -> bool {
     skill["runtimeConfirmationKind"] == "manual"
         || skill["runtimeConfirmed"] == true && skill["runtimeConfirmationKind"] != "automatic"
+}
+
+fn manifest_stamp(skill: &Value) -> Value {
+    let Some(mut manifest) = remote::declared_runtime(Some(&skill["catalogMetadata"])) else {
+        return Value::Null;
+    };
+    manifest.sort();
+    manifest.dedup();
+    json!({"sourceId":skill["sourceId"],"repo":skill["repo"],"branch":skill["branch"],
+        "remotePath":skill["remotePath"],"runtimeFiles":manifest})
 }
 
 fn binding_stamp(skill: &Value) -> String {
@@ -134,6 +144,7 @@ fn apply_local_audit_with_inventory(
         skill["runtimeConfirmed"] = json!(false);
     }
     audit["externalBindingStamp"] = json!(binding_stamp(skill));
+    audit["manifestStamp"] = manifest_stamp(skill);
     skill["runtimeAudit"] = audit;
     Ok(())
 }
@@ -160,6 +171,7 @@ pub(crate) fn refresh_local_audit(
             && audit["inventoryHashes"] == json!(inventory)
             && paths(recorded_scope) == paths(&skill["runtimeFiles"])
             && audit["externalBindingStamp"] == binding_stamp(skill)
+            && audit["manifestStamp"] == manifest_stamp(skill)
         {
             return false;
         }
@@ -170,6 +182,7 @@ pub(crate) fn refresh_local_audit(
         }
         let invalidated = skill["runtimeAudit"]["invalidatedAt"].clone();
         skill["runtimeAudit"] = json!({"status":if invalidated.is_string(){"needs_review"}else{"failed"},"checkedAt":now(),"method":"static_package","analyzerVersion":local::RUNTIME_ANALYZER_VERSION,"reason":error,"canAutoConfirm":false,"preservedScope":skill["runtimeFiles"],"inventoryHashes":inventory,"externalBindingStamp":binding_stamp(skill),"invocationStatus":"not_verified"});
+        skill["runtimeAudit"]["manifestStamp"] = manifest_stamp(skill);
         if invalidated.is_string() {
             skill["runtimeAudit"]["invalidatedAt"] = invalidated;
         }
@@ -244,6 +257,37 @@ pub fn handle(m: &mut Manager, request: &Value) -> Result<Option<Value>, String>
 mod tests {
     use super::*;
     use std::{fs, path::Path};
+    #[test]
+    fn catalog_and_source_changes_invalidate_audit_but_manifest_order_does_not() {
+        let temp = fixture();
+        let root = temp.path().join("manifest-cache");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("SKILL.md"),
+            "---\nname: fixture\n---\nInstructions.\n",
+        )
+        .unwrap();
+        fs::write(root.join("README.md"), "Optional notes.\n").unwrap();
+        let mut record = local::draft(&root).unwrap();
+        record["sourceId"] = json!("source");
+        record["catalogMetadata"] = json!({"runtime_files":["SKILL.md"]});
+        let inventory = local::files(&root).unwrap();
+        assert!(refresh_local_audit(&mut record, Some(&inventory)));
+        assert!(!refresh_local_audit(&mut record, Some(&inventory)));
+        let first = record["runtimeAudit"]["manifestStamp"].clone();
+        record["catalogMetadata"]["runtime_files"] = json!(["README.md", "SKILL.md"]);
+        assert!(refresh_local_audit(&mut record, Some(&inventory)));
+        assert_ne!(record["runtimeAudit"]["manifestStamp"], first);
+        record["catalogMetadata"]["runtime_files"] = json!(["SKILL.md", "README.md"]);
+        assert!(!refresh_local_audit(&mut record, Some(&inventory)));
+        record["sourceId"] = json!("other-source");
+        assert!(refresh_local_audit(&mut record, Some(&inventory)));
+        record["catalogMetadata"] = Value::Null;
+        assert!(refresh_local_audit(&mut record, Some(&inventory)));
+        assert!(record["runtimeAudit"]["manifestStamp"].is_null());
+        record["sourceId"] = json!("unrelated-source-without-a-manifest");
+        assert!(!refresh_local_audit(&mut record, Some(&inventory)));
+    }
     fn fixture() -> tempfile::TempDir {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()

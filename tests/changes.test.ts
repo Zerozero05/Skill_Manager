@@ -15,7 +15,7 @@ test('Changes categories partition the existing attention membership with no mis
     item('history',{runtimeIssues:[{category:'history',severity:'info',source:'sources.md',target:'old.md',reason:'Historical only'}]}),
   ];
   const before = structuredClone(skills);
-  assert.deepEqual(changesSummary(skills),{total:8,changed:2,review:4,problem:2});
+  assert.deepEqual(changesSummary(skills),{total:7,changed:1,review:4,problem:2});
   const all = queryChanges(skills), partitions = ['changed','review','problem'].flatMap(group => queryChanges(skills,{group:group as 'changed'|'review'|'problem'}));
   assert.deepEqual(all.map(skill => skill.id).sort(),skills.filter(needsAttention).map(skill => skill.id).sort());
   assert.deepEqual(partitions.map(skill => skill.id).sort(),all.map(skill => skill.id).sort());
@@ -45,6 +45,41 @@ test('primary actions preserve docs-only, extra-file, comparison and retry disti
   assert.equal(changePrimaryAction(item('error',{status:'docs_updated',error:'offline'})).kind,'check');
   assert.equal(changePrimaryAction(item('pending',{status:'local_modified',remoteCheckRequired:true})).kind,'check');
   assert.equal(changePrimaryAction(item('runtime',{runtimeIssues:[{category:'uncertain',severity:'warning',source:'SKILL.md',target:'file',reason:'Uncertain'}]})).kind,'files');
+});
+
+test('checked documentation leaves the task list while actual problems still choose their own reason and action', () => {
+  const docs = item('docs-only',{status:'docs_updated',runtimeWarnings:['Legacy warning superseded by structured information'],runtimeIssues:[{category:'history',severity:'info',source:'sources.md',target:'old.md',reason:'Historical only'}]});
+  assert.equal(needsAttention(docs),false);
+  assert.equal(changesGroup(docs),null);
+  assert.deepEqual(queryChanges([docs]),[]);
+  assert.deepEqual(changesSummary([docs]),{total:0,changed:0,review:0,problem:0});
+  const cases: {id:string;extra:Partial<LibraryItem>;reason:string;action:ReturnType<typeof changePrimaryAction>;group:'review'|'problem'}[] = [
+    {id:'required',extra:{runtimeIssues:[{category:'package_required',severity:'error',source:'SKILL.md',target:'run.py',reason:'Required script is missing'}],localNotice:'Another file needs review'},reason:'Required script is missing',action:{kind:'files',label:'查看文件'},group:'review'},
+    {id:'uncertain',extra:{runtimeIssues:[{category:'uncertain',severity:'warning',source:'SKILL.md',target:'config',reason:'Configuration needs review'}]},reason:'Configuration needs review',action:{kind:'files',label:'查看文件'},group:'review'},
+    {id:'legacy-runtime',extra:{runtimeWarnings:['Legacy runtime dependency needs review']},reason:'Legacy runtime dependency needs review',action:{kind:'files',label:'查看文件'},group:'review'},
+    {id:'notice',extra:{localNotice:'Local file could not be checked'},reason:'Local file could not be checked',action:{kind:'files',label:'查看文件'},group:'review'},
+    {id:'untracked',extra:{untrackedFiles:['custom.md']},reason:'另有 1 个本地文件未纳入文件范围',action:{kind:'files',label:'查看文件'},group:'review'},
+    {id:'association',extra:{associationPending:true,associationNote:'Choose the exact repository source'},reason:'Choose the exact repository source',action:{kind:'open',label:'选择来源'},group:'review'},
+    {id:'network',extra:{error:'Repository could not be checked'},reason:'Repository could not be checked',action:{kind:'check',label:'重新检查'},group:'problem'},
+    {id:'missing',extra:{remoteMissing:true},reason:'本地文件继续保留',action:{kind:'check',label:'重新检查'},group:'problem'},
+    {id:'pending',extra:{remoteCheckRequired:true},reason:'尚未核对当前远端',action:{kind:'check',label:'重新检查'},group:'review'},
+    {id:'external-required',extra:{runtimeAudit:{status:'needs_review',reason:'Required external rules are unavailable'},runtimeIssues:[{category:'external',severity:'warning',source:'SKILL.md',target:'shared/rules.md',reason:'External file needs a binding'}]},reason:'Required external rules are unavailable',action:{kind:'files',label:'查看文件'},group:'review'},
+    {id:'audit-failed',extra:{runtimeAudit:{status:'failed',reason:'File inventory could not be read'},runtimeIssues:[]},reason:'File inventory could not be read',action:{kind:'files',label:'查看文件'},group:'review'},
+    {id:'audit-no-reason',extra:{runtimeAudit:{status:'needs_review'},runtimeIssues:[]},reason:'运行文件或必要引用尚未核对完整',action:{kind:'files',label:'查看文件'},group:'review'},
+  ];
+  const skills = cases.map(({id,extra}) => item(id,{status:'docs_updated',...extra}));
+  const before = structuredClone(skills);
+  for (const [index,skill] of skills.entries()) {
+    const expected = cases[index];
+    assert(needsAttention(skill),expected.id);
+    assert.equal(changesGroup(skill),expected.group,expected.id);
+    assert(changeReason(skill).includes(expected.reason),expected.id);
+    assert.deepEqual(changePrimaryAction(skill),expected.action,expected.id);
+    assert.notEqual(changePrimaryAction(skill).kind,'docs',expected.id);
+  }
+  assert.deepEqual(changesSummary([docs,...skills]),{total:12,changed:0,review:10,problem:2});
+  assert.equal(queryChanges([docs,...skills]).length,12);
+  assert.deepEqual(skills,before,'Presentation preserves the compatible raw documentation status and records');
 });
 
 test('reasons use effective overlays and do not turn unknown comparison direction into missing installation history', () => {

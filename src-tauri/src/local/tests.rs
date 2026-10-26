@@ -1,5 +1,90 @@
 use super::*;
 
+#[test]
+fn explicit_script_arguments_are_not_missing_package_files() {
+    let temp = fixture();
+    let root = skill(&temp.path().join("script-command"));
+    fs::create_dir_all(root.join("scripts")).unwrap();
+    fs::write(
+        root.join("scripts/init-session.sh"),
+        "#!/bin/sh\necho initialized\n",
+    )
+    .unwrap();
+    let invocation = "scripts/init-session.sh \"Task Name\"";
+    fs::write(
+        root.join("SKILL.md"),
+        format!("---\nname: fixture-skill\n---\nRun `{invocation}`.\n"),
+    )
+    .unwrap();
+    let mut record = draft(&root).unwrap();
+    record["runtimeFiles"] = json!(["SKILL.md", "scripts/init-session.sh"]);
+    let audit = runtime_audit(&record).unwrap();
+    assert_eq!(audit["status"], "passed");
+    assert_eq!(audit["externalStatus"], "checked");
+    let arguments = audit["externalDependencies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["target"] == invocation)
+        .unwrap();
+    assert_eq!(arguments["required"], false);
+    assert_eq!(arguments["role"], "environment");
+    assert!(paths_for_test(&audit["requiredFiles"]).contains(&"scripts/init-session.sh".to_owned()));
+    record["externalBindings"] = json!([{"id":format!("{:x}", Sha256::digest(format!("SKILL.md\0{invocation}").as_bytes())),"source":"SKILL.md","target":invocation,"role":"required"}]);
+    let rebound = runtime_audit(&record).unwrap();
+    assert_eq!(
+        rebound["status"], "passed",
+        "an old whole-command binding cannot make arguments a required file"
+    );
+    assert!(rebound["externalDependencies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item["required"] == false));
+    fs::remove_file(root.join("scripts/init-session.sh")).unwrap();
+    let failed = runtime_audit(&record).unwrap();
+    assert_eq!(failed["status"], "needs_review");
+    assert!(failed["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|issue| issue["target"] == "scripts/init-session.sh" && issue["severity"] == "error"));
+}
+
+fn paths_for_test(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn command_entry_matching_preserves_spaced_paths_and_ambiguous_filenames() {
+    let all = BTreeMap::from([
+        ("scripts/任务 初始化.sh".into(), "same".into()),
+        ("scripts/exact.sh \"notes\"".into(), "same".into()),
+    ]);
+    assert_eq!(
+        script_command_entry("scripts/任务 初始化.sh \"Task Name\"", &all),
+        Some("scripts/任务 初始化.sh".into())
+    );
+    assert_eq!(
+        script_command_entry("scripts/exact.sh \"notes\"", &all),
+        None
+    );
+    assert_eq!(script_command_entry("scripts/真实 文件.sh", &all), None);
+    assert_eq!(
+        script_command_entry("scripts/ambiguous.py notes.txt", &all),
+        None
+    );
+    assert_eq!(
+        script_command_entry("scripts/missing.sh --check", &all),
+        Some("scripts/missing.sh".into())
+    );
+}
+
 fn fixture() -> tempfile::TempDir {
     let parent = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
