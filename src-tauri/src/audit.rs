@@ -23,11 +23,11 @@ pub(crate) fn preserves_manual_scope(skill: &Value) -> bool {
 }
 
 fn manifest_stamp(skill: &Value) -> Value {
-    let mut manifest = remote::declared_runtime(Some(&skill["catalogMetadata"]));
-    if let Some(files) = &mut manifest {
-        files.sort();
-        files.dedup();
-    }
+    let Some(mut manifest) = remote::declared_runtime(Some(&skill["catalogMetadata"])) else {
+        return Value::Null;
+    };
+    manifest.sort();
+    manifest.dedup();
     json!({"sourceId":skill["sourceId"],"repo":skill["repo"],"branch":skill["branch"],
         "remotePath":skill["remotePath"],"runtimeFiles":manifest})
 }
@@ -282,6 +282,11 @@ mod tests {
         assert!(!refresh_local_audit(&mut record, Some(&inventory)));
         record["sourceId"] = json!("other-source");
         assert!(refresh_local_audit(&mut record, Some(&inventory)));
+        record["catalogMetadata"] = Value::Null;
+        assert!(refresh_local_audit(&mut record, Some(&inventory)));
+        assert!(record["runtimeAudit"]["manifestStamp"].is_null());
+        record["sourceId"] = json!("unrelated-source-without-a-manifest");
+        assert!(!refresh_local_audit(&mut record, Some(&inventory)));
     }
     fn fixture() -> tempfile::TempDir {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
