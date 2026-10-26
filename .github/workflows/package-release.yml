@@ -1,0 +1,65 @@
+name: Prepare Windows release assets
+on:
+  push:
+    branches: [fix/v0.2.8-runtime-ui]
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: Successful Windows candidate run
+        required: true
+        default: '40306926235'
+      candidate_artifact:
+        description: Exact verified candidate artifact name
+        required: true
+        default: Skill_Manager_v0.2.10_windows_x64_candidate_caa94532aa9e8e57f284adc7a3de4a49dd92e3d7
+      executable_sha256:
+        description: Independently verified candidate executable SHA256
+        required: true
+        default: b8449fd56195ff0005e271f52fbf4bed096d40d4788228a5b0f3f0728b2771ad
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: prepare-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  package:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Install locked packaging tools
+        run: |
+          npm install --global pnpm@11.25.0
+          if ($LASTEXITCODE -ne 0) { throw 'Package manager installation failed' }
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { throw 'Locked packaging tool installation failed' }
+      - name: Download and verify candidate, then prepare seven release assets
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id || '40306926235' }}
+          CANDIDATE_ARTIFACT: ${{ inputs.candidate_artifact || 'Skill_Manager_v0.2.10_windows_x64_candidate_caa94532aa9e8e57f284adc7a3de4a49dd92e3d7' }}
+          EXPECTED_EXECUTABLE_SHA256: ${{ inputs.executable_sha256 || 'b8449fd56195ff0005e271f52fbf4bed096d40d4788228a5b0f3f0728b2771ad' }}
+        run: ./scripts/prepare-release.ps1 -CandidateRunId $env:CANDIDATE_RUN_ID -CandidateArtifact $env:CANDIDATE_ARTIFACT -ExpectedExecutableSha256 $env:EXPECTED_EXECUTABLE_SHA256
+      - name: Upload reviewable release assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
+        with:
+          name: Skill_Manager_v${{ steps.release.outputs.version }}_release_assets_${{ github.sha }}
+          path: outputs/release-assets/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload packaging verification
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
+        with:
+          name: Skill_Manager_release_verification_${{ github.sha }}
+          path: outputs/release-verification/
+          if-no-files-found: error
+          retention-days: 14
