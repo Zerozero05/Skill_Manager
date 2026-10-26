@@ -5,7 +5,7 @@
 .check-button-group .button { min-height:30px; padding:5px 9px; border:0; border-radius:0; white-space:nowrap; }
 .check-button-group .check-mode { border-left:1px solid var(--line); gap:3px; }
 .check-error { position:absolute; z-index:100; right:0; top:calc(100% + 8px); width:min(380px,85vw); padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface); box-shadow:0 6px 24px #0003; overflow-wrap:anywhere; }
-.local-import { display:grid; gap:16px; min-width:0; }
+.local-import { display:grid; gap:16px; min-width:0; container-type:inline-size; }
 .local-import-toolbar,.local-import-actions,.local-source-actions,.check-recap summary,.changes-selection { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
 .local-import-toolbar input { flex:1; min-width:180px; }
 .local-path-list { list-style:none; margin:0; padding:0; display:grid; gap:6px; }
@@ -23,12 +23,40 @@
 .local-discovery-row small { display:block; overflow-wrap:anywhere; color:var(--muted); }
 .local-import-submit { position:sticky; bottom:0; display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; padding:14px 0; background:var(--surface); border-top:1px solid var(--line); z-index:2; }
 .local-import-submit label { display:flex; gap:8px; align-items:center; }
-.local-roots { margin-top:14px; border-top:1px solid var(--line); }
-.local-root-row { display:grid; grid-template-columns:20px minmax(0,1fr); gap:12px; padding:14px 0; border-bottom:1px solid var(--line); }
-.local-root-heading { display:flex; align-items:center; gap:8px; }
-.local-root-heading input { width:min(100%,360px); }
+.local-roots { margin-top:4px; border-top:1px solid var(--line); }
+.local-list-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px 20px; padding:12px 0; }
+.local-list-header h3 { margin:0; }
+.local-list-header h3 .muted,.local-ignored summary .muted { margin-left:6px; font-size:.88em; font-weight:400; }
+.local-root-list,.local-ignored-list { list-style:none; margin:0; padding:0; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+.local-root-list:empty,.local-ignored-list:empty { display:none; }
+.local-root-row { display:grid; grid-template-columns:20px minmax(0,1fr) auto auto; align-items:center; gap:8px 12px; min-height:60px; padding:9px 12px; border-bottom:1px solid var(--line); }
+.local-root-row:last-child,.local-ignored-list li:last-child .local-ignored-row { border-bottom:0; }
+.local-root-row>input,.local-ignored-row>input { margin:0; }
+.local-root-content,.local-ignored-row>span { min-width:0; }
+.local-root-heading { display:flex; align-items:center; min-height:1.4em; }
+.local-root-heading strong,.local-ignored-row strong { overflow-wrap:anywhere; font-weight:650; }
+.local-root-heading input { width:min(100%,360px); min-width:0; padding:4px 7px; }
+.local-root-content .local-root-path { margin:2px 0 0; line-height:1.4; color:var(--muted); }
+.local-root-content .error-text { margin:4px 0 0; overflow-wrap:anywhere; }
+.local-root-status { white-space:nowrap; }
+.local-root-actions { display:flex; align-items:center; justify-content:flex-end; gap:6px; min-width:106px; }
+.local-root-actions .button { padding:5px 9px; min-height:30px; }
+.local-root-more { width:32px; min-height:30px; }
+.local-root-row[data-selected],.local-ignored-row[data-selected] { background:var(--selected); }
+.local-root-row:focus-within,.local-ignored-row:focus-within { box-shadow:inset 3px 0 var(--accent); }
 .local-source-actions .button { padding:5px 9px; min-height:30px; }
-.local-ignored { margin:8px 0; }
+.local-selection-count { color:var(--muted); font-size:.88em; white-space:nowrap; }
+.local-ignored { margin:0; }
+.local-ignored summary { padding:8px 0; cursor:pointer; font-weight:650; }
+.local-ignored-actions { padding:4px 0 10px; }
+.local-ignored-row { display:grid; grid-template-columns:20px minmax(0,1fr); align-items:center; gap:12px; min-height:60px; padding:9px 12px; border-bottom:1px solid var(--line); cursor:pointer; }
+.local-ignored-row strong,.local-ignored-row small { display:block; }
+.local-ignored-row small { margin-top:2px; line-height:1.4; color:var(--muted); }
+@container(width < 640px) {
+  .local-root-row { grid-template-columns:20px minmax(0,1fr) auto; }
+  .local-root-actions { grid-column:2 / -1; justify-content:flex-start; }
+  .local-list-header { align-items:flex-start; }
+}
 .check-recap { margin:0 0 16px; padding:12px 16px; border:1px solid var(--line); border-radius:10px; background:var(--surface); }
 .check-recap summary { cursor:pointer; }
 .check-recap summary strong { margin-right:auto; }

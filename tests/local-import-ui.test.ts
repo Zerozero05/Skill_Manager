@@ -1,6 +1,6 @@
 import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { createElement, act } from 'react';
 import { JSDOM } from 'jsdom';
 import ts from 'typescript';
@@ -8,6 +8,15 @@ import type { LocalImportDraft } from '../src/local-sources.ts';
 
 // Load the actual component and helper, without copying their implementation.
 const modules = new Map<string, Promise<string>>();
+async function relativeModule(value: string, parent: URL): Promise<URL> {
+  if (/\.[cm]?[jt]sx?$/.test(value)) return new URL(value, parent);
+  for (const suffix of ['.ts', '.tsx']) {
+    const url = new URL(value + suffix, parent);
+    try { await access(url); return url; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+  throw new Error(`Cannot resolve ${value} from ${parent.href}`);
+}
 async function moduleURL(url: URL): Promise<string> {
   const previous = modules.get(url.href); if (previous) return previous;
   const loading = (async () => {
@@ -15,14 +24,14 @@ async function moduleURL(url: URL): Promise<string> {
     const replacements = new Map<string, string>();
     for (const match of code.matchAll(/from\s+(['"])([^'"]+)\1/g)) {
       const value = match[2]; if (replacements.has(value)) continue;
-      replacements.set(value, value.startsWith('.') ? await moduleURL(new URL(/\.[cm]?[jt]sx?$/.test(value) ? value : value + '.ts', url)) : import.meta.resolve(value));
+      replacements.set(value, value.startsWith('.') ? await moduleURL(await relativeModule(value, url)) : import.meta.resolve(value));
     }
     code = code.replace(/from\s+(['"])([^'"]+)\1/g, (_match,_quote,value) => `from ${JSON.stringify(replacements.get(value))}`);
     return `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`;
   })(); modules.set(url.href,loading); return loading;
 }
-const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {url:'http://localhost'});
-Object.assign(globalThis,{window:dom.window,document:dom.window.document,HTMLElement:dom.window.HTMLElement,Element:dom.window.Element,Node:dom.window.Node,IS_REACT_ACT_ENVIRONMENT:true});
+const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {url:'http://localhost',pretendToBeVisual:true});
+Object.assign(globalThis,{window:dom.window,document:dom.window.document,HTMLElement:dom.window.HTMLElement,Element:dom.window.Element,Node:dom.window.Node,getComputedStyle:dom.window.getComputedStyle.bind(dom.window),requestAnimationFrame:dom.window.requestAnimationFrame.bind(dom.window),cancelAnimationFrame:dom.window.cancelAnimationFrame.bind(dom.window),IS_REACT_ACT_ENVIRONMENT:true});
 const { createRoot } = await import('react-dom/client');
 const { LocalSources } = await import(await moduleURL(new URL('../src/LocalSources.tsx',import.meta.url)));
 const host=document.getElementById('root')!;
@@ -32,6 +41,11 @@ afterEach(async()=>{await act(async()=>cleanup());cleanup=()=>{};});
 const buttons=(text:string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).filter(button=>button.textContent?.includes(text));
 const box=(name:string) => host.querySelector<HTMLInputElement>(`input[aria-label="选择 ${name}"]`)!;
 const press=async(element:Element,options:MouseEventInit={})=>act(async()=>{element.dispatchEvent(new dom.window.MouseEvent('click',{bubbles:true,cancelable:true,...options}));});
+const key=async(element:Element,value:string)=>act(async()=>{element.dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:value,bubbles:true,cancelable:true}));});
+const row=(name:string)=>Array.from(host.querySelectorAll<HTMLElement>('.local-root-row')).find(item=>item.querySelector('strong')?.textContent===name)!;
+const menuItem=(name:string)=>Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find(item=>item.textContent===name)!;
+const openRootMenu=async(name:string)=>{const trigger=row(name).querySelector<HTMLButtonElement>('[aria-haspopup="menu"]')!;assert(trigger);await press(trigger);return trigger;};
+const change=async(input:HTMLInputElement,value:string)=>act(async()=>{Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype,'value')!.set!.call(input,value);input.dispatchEvent(new dom.window.Event('input',{bubbles:true}));});
 const noop=()=>{};
 
 test('multiple directory preview preserves managed, readonly and ignored choices and sends explicit selection/exclusions',async()=>{
@@ -85,7 +99,7 @@ test('root pause/remove and ignored restore dispatch management-only commands wi
   const roots=[{id:'a',name:'Alpha',path:'D:/synthetic/a',enabled:true},{id:'b',name:'Beta',path:'D:/synthetic/b',enabled:false}];
   const root=createTestRoot();
   await act(async()=>root.render(createElement(LocalSources,{roots,ignoredPaths:['D:/synthetic/a/ignored'],skills:[],onDraft:noop,action,onClose:noop})));
-  await press(buttons('暂停')[0]);
+  await openRootMenu('Alpha');await press(menuItem('暂停'));
   assert.deepEqual(calls[0],{command:'update_local_root',args:{rootId:'a',enabled:false}});
   await press(host.querySelector<HTMLInputElement>('[aria-label="选择目录 Alpha"]')!);
   await press(buttons('移除目录 (1)')[0]);
@@ -96,4 +110,63 @@ test('root pause/remove and ignored restore dispatch management-only commands wi
   await press(buttons('恢复所选 (1)')[0]);
   assert.deepEqual(calls[2],{command:'restore_local_ignores',args:{paths:['D:/synthetic/a/ignored']}});
   assert(calls.every(call=>!['forget','delete_skill','disconnect'].includes(call.command)));
+});
+
+test('compact directory actions preserve check, resume, rename, cancellation and single removal payloads',async()=>{
+  const calls:{command:string;args:any}[]=[];
+  const action=async(_label:string,command:string,args:any)=>{calls.push({command,args});return {skills:[]};};
+  const roots=[{id:'a',name:'Alpha',path:'D:/synthetic/中文 空格/a',enabled:true},{id:'b',name:'Beta',path:'D:/synthetic/b',enabled:false}];
+  const root=createTestRoot();
+  await act(async()=>root.render(createElement(LocalSources,{roots,ignoredPaths:[],skills:[],onDraft:noop,action,onClose:noop})));
+  assert.deepEqual(calls,[],'mounting the list must not scan or perform network actions');
+  await press(Array.from(row('Alpha').querySelectorAll('button')).find(button=>button.textContent==='检查')!);
+  assert.deepEqual(calls.at(-1),{command:'check_now',args:{rootIds:['a']}});
+  await openRootMenu('Beta');await press(menuItem('恢复'));
+  assert.deepEqual(calls.at(-1),{command:'update_local_root',args:{rootId:'b',enabled:true}});
+  await openRootMenu('Alpha');await press(menuItem('改名'));
+  const input=host.querySelector<HTMLInputElement>('[aria-label="目录名称"]')!;
+  assert.equal(input.value,'Alpha');
+  await change(input,'Changed');await press(buttons('取消').find(button=>button.textContent==='取消')!);
+  assert.equal(host.querySelector('[aria-label="目录名称"]'),null);assert.equal(calls.length,2);
+  await openRootMenu('Alpha');await press(menuItem('改名'));
+  await change(host.querySelector<HTMLInputElement>('[aria-label="目录名称"]')!,'  中文名称  ');
+  await press(buttons('保存')[0]);
+  assert.deepEqual(calls.at(-1),{command:'update_local_root',args:{rootId:'a',name:'中文名称'}});
+  await openRootMenu('Beta');await press(menuItem('移除目录'));
+  assert.deepEqual(calls.at(-1),{command:'remove_local_roots',args:{rootIds:['b']}});
+});
+
+test('directory menu supports keyboard dismissal and restores focus to the same trigger',async()=>{
+  const root=createTestRoot();
+  await act(async()=>root.render(createElement(LocalSources,{roots:[{id:'a',name:'Alpha',path:'D:/synthetic/a',enabled:true}],ignoredPaths:[],skills:[],onDraft:noop,action:async()=>({}),onClose:noop})));
+  const trigger=await openRootMenu('Alpha');
+  assert.equal(document.activeElement,menuItem('改名'));
+  await key(document.activeElement!,'End');assert.equal(document.activeElement,menuItem('移除目录'));
+  await key(document.activeElement!,'ArrowUp');assert.equal(document.activeElement,menuItem('暂停'));
+  await key(document.activeElement!,'Escape');
+  assert.equal(document.querySelector('[role="menu"]'),null);assert.equal(document.activeElement,trigger);
+});
+
+test('ignored entries are separate named rows while restore retains exact extended Windows and UNC paths',async()=>{
+  const paths=[String.raw`\\?\D:\Synthetic\中文 空格\Alpha`,String.raw`\\?\UNC\server\share\Beta`];
+  const calls:{command:string;args:any}[]=[];
+  const action=async(_label:string,command:string,args:any)=>{calls.push({command,args});return {skills:[]};};
+  const root=createTestRoot();
+  await act(async()=>root.render(createElement(LocalSources,{roots:[],ignoredPaths:paths,skills:[],onDraft:noop,action,onClose:noop})));
+  assert.deepEqual(calls,[]);
+  const ignored=host.querySelector<HTMLDetailsElement>('.local-ignored')!;
+  await act(async()=>{ignored.open=true;});
+  const labels=Array.from(ignored.querySelectorAll<HTMLLabelElement>('label'));
+  assert.equal(labels.length,2);
+  assert.equal(labels[0].querySelector('strong')?.textContent,'Alpha');
+  assert.equal(labels[1].querySelector('strong')?.textContent,'Beta');
+  assert(labels[0].textContent?.includes(String.raw`D:\Synthetic\中文 空格\Alpha`));
+  assert(labels[1].textContent?.includes(String.raw`\\server\share\Beta`));
+  assert(!ignored.textContent?.includes('\\\\?\\'));
+  await press(Array.from(ignored.querySelectorAll('button')).find(button=>button.textContent==='全选')!);
+  assert(labels.every(label=>label.querySelector<HTMLInputElement>('input')!.checked));
+  await press(Array.from(ignored.querySelectorAll('button')).find(button=>button.textContent==='取消选择')!);
+  assert(labels.every(label=>!label.querySelector<HTMLInputElement>('input')!.checked));
+  await press(labels[1].querySelector('input')!);await press(buttons('恢复所选 (1)')[0]);
+  assert.deepEqual(calls,[{command:'restore_local_ignores',args:{paths:[paths[1]]}}]);
 });
